@@ -1,13 +1,13 @@
 import argparse
 import importlib
-import inspect  # <-- Thêm thư viện này để đọc signature của class
+import inspect  
 import os
 from typing import Optional, Union, Any
 from types import SimpleNamespace
 import torch.nn as nn
 
-from utils import logger
-from utils.config_helper import get_param
+from cv_nets.utils import logger
+from cv_nets.utils.config_helper import get_param
 
 SUPPORTED_ACT_FNS = []
 ACT_FN_MODULES = {}
@@ -132,7 +132,6 @@ def build_activation_layer(
     return act_class(**filtered_args)
 
 
-# --- Giữ nguyên logic auto-import ---
 act_dir = os.path.dirname(__file__)
 for file in os.listdir(act_dir):
     path = os.path.join(act_dir, file)
@@ -141,11 +140,9 @@ for file in os.listdir(act_dir):
         and not file.startswith(".")
         and (file.endswith(".py") or os.path.isdir(path))
     ):
-        # THAY THẾ CÁCH CŨ BẰNG CÁCH NÀY:
-        # Tự động tách 'relu.py' thành ['relu', '.py'] và lấy phần tử [0]
         model_name = os.path.splitext(file)[0]
         
         try:
-            importlib.import_module("layers.activation." + model_name)
+            importlib.import_module("." + model_name, package=__name__)
         except Exception as e:
             logger.warning(f"Failed to auto-import module '{model_name}': {e}")

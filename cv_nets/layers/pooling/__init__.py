@@ -5,7 +5,7 @@ from typing import Optional, Union, Any
 from types import SimpleNamespace
 import torch.nn as nn
 
-from utils import logger
+from cv_nets.utils import logger
 
 
 SUPPORTED_POOLING_LAYERS = []
@@ -68,11 +68,8 @@ def build_pooling_layer(
     padding: Optional[Any] = None,
     **kwargs
 ) -> Optional[nn.Module]:
-    
-    # Ưu tiên pool_type truyền trực tiếp, sau đó đến cấu hình trong opts
     if pool_type is None:
         pool_type = getattr(opts, "type", None)
-        # Nếu opts là một cấu hình lồng nhau (nested), bạn có thể dùng hàm get_config_prop bạn đã viết
     
     if not pool_type:
         logger.error("Pooling type must be specified.")
@@ -81,7 +78,6 @@ def build_pooling_layer(
     pool_type = pool_type.lower()
 
     if pool_type in SUPPORTED_POOLING_LAYERS:
-        # Khởi tạo layer từ Registry, truyền opts để layer tự lấy thêm các params khác
         return POOLING_LAYER_REGISTRY[pool_type](
             kernel_size=kernel_size,
             stride=stride,
@@ -96,6 +92,7 @@ def build_pooling_layer(
     raise NotImplementedError(f"Pooling type '{pool_type}' is not supported.")
 
 pooling_dir = os.path.dirname(__file__)
+
 for file in os.listdir(pooling_dir):
     path = os.path.join(pooling_dir, file)
     if (
@@ -104,7 +101,4 @@ for file in os.listdir(pooling_dir):
         and (file.endswith(".py") or os.path.isdir(path))
     ):
         model_name = file[: file.find(".py")] if file.endswith(".py") else file
-        try:
-            importlib.import_module("layers.pooling." + model_name)
-        except Exception as e:
-            logger.warning(f"Failed to auto-import module '{model_name}': {e}")
+        module = importlib.import_module("." + model_name, package=__name__)

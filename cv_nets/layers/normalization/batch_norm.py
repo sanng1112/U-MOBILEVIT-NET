@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 from torch import Tensor, nn
 
-from layers.normalization import register_norm_fn
+from . import register_norm_fn
 
 
 @register_norm_fn(name="batch_norm")

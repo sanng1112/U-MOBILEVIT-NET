@@ -4,15 +4,15 @@ import inspect
 import os
 
 
-from layers.conv_layer import Conv2d
-from layers.convtranspose2d import ConvTranspose2d
-from layers.dropout import Dropout, Dropout2D
-from layers.linear_layer import LinearLayer
-from layers.flatten import Flatten
-from layers.base_layer import BaseLayer
-from layers.pooling import build_pooling_layer
-from layers.activation import build_activation_layer, arguments_activation_fn
-from layers.normalization import build_normalization_layer, arguments_norm_layers
+from .conv_layer import Conv2d
+from .convtranspose2d import ConvTranspose2d
+from .dropout import Dropout, Dropout2D
+from .linear_layer import LinearLayer
+from .flatten import Flatten
+from .base_layer import BaseLayer
+from .pooling import build_pooling_layer
+from .activation import build_activation_layer, arguments_activation_fn
+from .normalization import build_normalization_layer, arguments_norm_layers
 
 
 

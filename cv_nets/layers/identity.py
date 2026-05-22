@@ -1,6 +1,6 @@
 from torch import Tensor
 
-from layers.base_layer import BaseLayer
+from cv_nets.layers.base_layer import BaseLayer
 
 class Identity(BaseLayer):
     def __init__(self, *args, **kwargs):

@@ -5,9 +5,9 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from layers.base_layer import BaseLayer
-from utils import logger
-from utils.config_helper import get_param
+from cv_nets.layers.base_layer import BaseLayer
+from cv_nets.utils import logger
+from cv_nets.utils.config_helper import get_param
 
 
 class LinearLayer(BaseLayer):

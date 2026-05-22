@@ -2,7 +2,7 @@ import argparse
 import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, Any
-from utils.config_helper import get_param
+from cv_nets.utils.config_helper import get_param
 
 
 

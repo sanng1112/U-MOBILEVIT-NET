@@ -5,9 +5,9 @@ from typing import Optional
 
 import torch
 
-from layers.identity import Identity
-from utils import logger
-from utils.config_helper import get_param
+from cv_nets.layers.identity import Identity
+from cv_nets.utils import logger
+from cv_nets.utils.config_helper import get_param
 
 SUPPORTED_NORM_FNS = []
 NORM_LAYER_REGISTRY = {}
@@ -122,4 +122,4 @@ for file in os.listdir(norm_dir):
         and (file.endswith(".py") or os.path.isdir(path))
     ):
         model_name = file[: file.find(".py")] if file.endswith(".py") else file
-        module = importlib.import_module("layers.normalization." + model_name)
+        module = importlib.import_module("." + model_name, package=__name__)
