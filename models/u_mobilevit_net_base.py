@@ -320,7 +320,7 @@ class UNetMobileViT(nn.Module):
 
         x = self.final_conv(x)
         x = self.dequant(x)
-        return x 
+        return x
     
 def check_model_convergence(model, device='cpu'):
     print(f"Đưa mô hình lên {device.upper()} và bắt đầu kiểm tra...")
