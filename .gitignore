@@ -220,3 +220,7 @@ __marimo__/
 
 demo/
 COCO/
+5000_tea_leaf_with_blackbg_geotagged/
+teaLeafBD/
+extracted_leaf_objects/
+coco_leaf/
