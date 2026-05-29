@@ -179,10 +179,29 @@ class UNetMobileViT(nn.Module):
     - attention ở 2 decoder stage sâu nhất
     - 2 decoder stage còn lại dùng residual add
     """
-    def __init__(self, opts: Any = None, num_classes: int = 1) -> None:
+    def __init__(
+        self,
+        opts: Any = None,
+        num_classes: int = 1,
+        input_size: int = 320,
+        fourier_num_heads: int = 8,
+        fourier_use_channel_mix: bool = True,
+        fourier_dropout: float = 0.0,
+    ) -> None:
         super().__init__()
 
         features = [16, 32, 64, 128]
+
+        # Spatial size at the bottleneck = input_size / 2**len(features).
+        # For input_size=320 and 4 encoder downsamples this is 20x20.
+        if input_size % (2 ** len(features)) != 0:
+            raise ValueError(
+                f"input_size ({input_size}) must be divisible by "
+                f"{2 ** len(features)} to land on integer feature maps."
+            )
+        bottleneck_h = bottleneck_w = input_size // (2 ** len(features))
+        self.input_size = input_size
+        self.bottleneck_spatial = (bottleneck_h, bottleneck_w)
 
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
@@ -231,6 +250,26 @@ class UNetMobileViT(nn.Module):
             embed_dim=bottleneck_dim,
             patch_size=2
         )
+        # Parallel Fourier-domain attention branch operating on the same
+        # bottleneck feature map. Global by construction (every spectral
+        # coefficient touches every spatial position), complementary to the
+        # spatial linear attention above. See FourierAttention2D for the
+        # mathematical justification.
+        self.bottleneck_fourier = FourierAttention2D(
+            opts=opts,
+            embed_dim=bottleneck_dim,
+            spatial_size=self.bottleneck_spatial,
+            num_heads=fourier_num_heads,
+            use_channel_mix=fourier_use_channel_mix,
+            dropout=fourier_dropout,
+        )
+        # Per-channel learnable gates that fuse the two branches.
+        # Spatial branch starts at full weight, Fourier branch at half weight,
+        # so early-training behaviour matches the original model and the
+        # Fourier contribution grows only when it actually helps the loss.
+        self.spatial_gate = nn.Parameter(torch.ones(1, bottleneck_dim, 1, 1))
+        self.fourier_gate = nn.Parameter(torch.full((1, bottleneck_dim, 1, 1), 0.5))
+
         self.bottleneck_out = MV2Block(
             opts=opts,
             in_channels=bottleneck_dim,
@@ -300,9 +339,12 @@ class UNetMobileViT(nn.Module):
             skip_connections.append(x)
             x = self.downsample_layers[i](x)
 
-        # Bottleneck
+        # Bottleneck: two parallel branches over the same input,
+        # fused with learnable per-channel gates.
         x = self.bottleneck_in(x)
-        x = self.bottleneck_attn(x)
+        x_spatial = self.bottleneck_attn(x)
+        x_fourier = self.bottleneck_fourier(x)
+        x = self.spatial_gate * x_spatial + self.fourier_gate * x_fourier
         x = self.bottleneck_out(x)
 
         # Decoder

@@ -11,6 +11,7 @@ from .linear_layer import LinearLayer
 from .flatten import Flatten
 from .base_layer import BaseLayer
 from .linear_attention import LinearSelfAttention
+from .fourier_attention import FourierAttention2D
 from .pooling import build_pooling_layer
 from .activation import build_activation_layer, arguments_activation_fn
 from .normalization import build_normalization_layer, arguments_norm_layers
