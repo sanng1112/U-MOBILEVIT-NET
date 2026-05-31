@@ -121,7 +121,11 @@ class SeparableAttention(BaseLayer):
             self.initializer(self.q_proj_weight)
             self.initializer(self.k_proj_weight)
             self.initializer(self.v_proj_weight)
-        
+
+        # [FIX NaN] out_proj_weight chưa từng được khởi tạo — torch.empty()
+        # trả về bộ nhớ rác, có thể chứa NaN/Inf.
+        self.initializer(self.out_proj_weight)
+
         if self.in_proj_bias is not None:
             zeros_(self.in_proj_bias)
             zeros_(self.out_proj_bias)
