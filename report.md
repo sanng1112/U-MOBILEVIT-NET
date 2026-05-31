@@ -1,9 +1,5 @@
 # U-MobileViT-Net: Báo Cáo Phân Tích Kiến Trúc & Đánh Giá Thiết Bị Biên
 
-> **Ngày:** 2026-05-31
-> **Tác giả:** Phân tích bởi Claude Code
-> **Repository:** `U-MOBILEVIT-NET`
-
 ---
 
 ## Mục Lục
