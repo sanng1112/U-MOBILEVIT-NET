@@ -1,10 +1,18 @@
 import argparse
-import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, Any
-from layers import (Conv2d, build_activation_layer, build_normalization_layer)
+from cv_nets.layers import Conv2d, build_activation_layer, build_normalization_layer
+from cv_nets.utils.config_helper import get_param
+
 
 class MV2Block(nn.Module):
+    """
+    Khối Inverted Residual của MobileNetV2 (MBConv).
+
+    Cấu trúc: PW mở rộng (1x1) -> DW (kxk) -> PW chiếu (1x1), kèm residual khi
+    `stride == 1` và `in_channels == out_channels`. Đây là khối nền tảng cho các
+    mạng nhẹ chạy thời gian thực trên thiết bị biên.
+    """
     def __init__(
         self,
         in_channels: Optional[int] = None,
@@ -21,17 +29,13 @@ class MV2Block(nn.Module):
         super().__init__()
 
         opts = opts or kwargs.get("opts", None)
-        
-        def get_param(explicit_val, attr_name, default_val):
-            if explicit_val is not None:
-                return explicit_val
-            return getattr(opts, attr_name, default_val)
-        _in_channels = get_param(in_channels, "in_channels", None)
-        _out_channels = get_param(out_channels, "out_channels", None)
-        _stride = get_param(stride, "stride", 1)
-        _expansion_ratio = get_param(expansion_ratio, "expansion_ratio", 6)
-        _act_name = get_param(act_name, "act.type", "relu6")
-        
+
+        _in_channels = get_param(opts, in_channels, "in_channels", None)
+        _out_channels = get_param(opts, out_channels, "out_channels", None)
+        _stride = get_param(opts, stride, "stride", 1)
+        _expansion_ratio = get_param(opts, expansion_ratio, "expansion_ratio", 6)
+        _act_name = get_param(opts, act_name, "act.type", "relu6")
+
         if _in_channels is None or _out_channels is None:
             raise ValueError("`in_channels` and `out_channels` must be provided directly or via `opts`.")
 
@@ -45,7 +49,7 @@ class MV2Block(nn.Module):
                 Conv2d(in_channels=_in_channels, out_channels=hidden_dim, kernel_size=1, bias=False, opts=opts)
             )
             layers.append(build_normalization_layer(opts, num_features=hidden_dim))
-            layers.append(build_activation_layer(opts, act_name=_act_name))
+            layers.append(build_activation_layer(opts, act_type=_act_name))
 
         layers.append(
             Conv2d(
@@ -62,7 +66,7 @@ class MV2Block(nn.Module):
         )
 
         layers.append(build_normalization_layer(opts, num_features=hidden_dim))
-        layers.append(build_activation_layer(opts, act_name=_act_name))
+        layers.append(build_activation_layer(opts, act_type=_act_name))
 
         layers.append(
             Conv2d(in_channels=hidden_dim, out_channels=_out_channels, kernel_size=1, bias=False, opts=opts)

@@ -224,3 +224,12 @@ COCO/
 teaLeafBD/
 extracted_leaf_objects/
 coco_leaf/
+
+
+.claude
+
+
+.pth
+.pt
+.onnx
+.zip

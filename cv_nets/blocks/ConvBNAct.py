@@ -2,8 +2,8 @@ import argparse
 import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, Any
-from layers import Conv2d, build_activation_layer, build_normalization_layer, arguments_activation_fn,  arguments_norm_layers
-from utils.config_helper import get_param
+from cv_nets.layers import Conv2d, build_activation_layer, build_normalization_layer, arguments_activation_fn, arguments_norm_layers
+from cv_nets.utils.config_helper import get_param
 
 class ConvBNAct(nn.Module):
     def __init__(

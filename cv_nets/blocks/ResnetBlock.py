@@ -2,9 +2,9 @@ import copy
 import torch
 from torch import nn, Tensor
 from typing import Optional, Any
-from layers import build_activation_layer
-from utils.config_helper import get_param
-from blocks.ConvBNAct import ConvBNAct
+from cv_nets.layers import build_activation_layer
+from cv_nets.utils.config_helper import get_param
+from cv_nets.blocks.ConvBNAct import ConvBNAct
 class ResNetBasicBlock(nn.Module):
     expansion = 1
 

@@ -75,7 +75,7 @@ def build_activation_layer(
             get_config_prop(opts, "act.name") or 
             get_config_prop(opts, "act.type") or 
             get_config_prop(opts, "type") or 
-            "relu"
+            "leaky_relu"
         )
         
     if not act_type or not isinstance(act_type, str):
@@ -99,11 +99,10 @@ def build_activation_layer(
     raw_args = {
         "inplace": inplace_val,
         "negative_slope": neg_slope_val,
-        "neg_slope": neg_slope_val,  # Mapping dự phòng cho cả 2 cách đặt tên biến
+        "neg_slope": neg_slope_val,  
         "num_parameters": num_params_val,
         "num_params": num_params_val
     }
-    # Gộp thêm bất kỳ cặp key-value tùy biến nào mà người dùng truyền trực tiếp qua hàm
     raw_args.update(kwargs)
 
     # 3. Trích xuất Lớp đích được đăng ký

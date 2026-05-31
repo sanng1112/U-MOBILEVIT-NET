@@ -35,7 +35,7 @@ class Conv2d(nn.Conv2d):
         _out_channels = get_param(opts, out_channels, "out_channels", None)
         _kernel_size = get_param(opts, kernel_size, "kernel_size", 3)
         _stride = get_param(opts, stride, "stride", 1)
-        _padding = get_param(opts, padding, "padding", 1)
+        _padding = get_param(opts, padding, "padding", 0)
         _dilation = get_param(opts, dilation, "dilation", 1)
         _groups = get_param(opts, groups, "groups", 1)
         _padding_mode = get_param(opts, padding_mode, "padding_mode", "zeros")

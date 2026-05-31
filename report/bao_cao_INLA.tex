@@ -1,0 +1,621 @@
+\documentclass[12pt,a4paper]{article}
+% Linh hoạt theo engine: pdflatex (cần vntex/T5) hoặc xelatex/lualatex (Unicode trực tiếp).
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \IfFileExists{t5enc.def}{\usepackage[T5]{fontenc}}{\usepackage[T1]{fontenc}}
+\else
+  \usepackage{fontspec}
+\fi
+% Chỉ nạp babel tiếng Việt nếu có sẵn (vntex/babel-vietnamese); nếu không, fontspec/Unicode tự render.
+\IfFileExists{vietnamese.ldf}{\usepackage[vietnamese]{babel}}{%
+  \renewcommand{\contentsname}{Mục lục}%
+  \renewcommand{\refname}{Tài liệu tham khảo}%
+  \renewcommand{\tablename}{Bảng}%
+  \renewcommand{\figurename}{Hình}%
+}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{microtype}
+\usepackage{titlesec}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+\setstretch{1.25}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=cyan,
+    citecolor=red
+}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{teal},
+    breaklines=true,
+    frame=single,
+    showstringspaces=false,
+    language=Python,
+    columns=fullflexible,
+}
+
+% =========================================================
+% Theorem environments
+% =========================================================
+\newtheorem{theorem}{Định lý}[section]
+\newtheorem{lemma}{Bổ đề}[section]
+\newtheorem{proposition}{Mệnh đề}[section]
+\newtheorem{corollary}{Hệ quả}[section]
+\newtheorem{definition}{Định nghĩa}[section]
+\newtheorem{remark}{Nhận xét}[section]
+
+% =========================================================
+% Title
+% =========================================================
+\title{
+    \vspace{-1.8cm}
+    \begin{center}
+        \vspace{0.5cm}
+        \LARGE \textbf{U-MobileViT cho phân vùng thời gian thực trên thiết bị biên} \\
+        \LARGE \textbf{và tính mới INLA: Inverted Nonlinear Low-rank Attention} \\
+        \Large \textit{Báo cáo dự án: kiến trúc, tối ưu hóa edge, phân tích cơ chế kiểm soát rank collapse} \\
+        \vspace{0.5cm}
+    \end{center}
+}
+
+\author{Nguyễn Ngọc Bình An, Hoàng Thị Linh Hương}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Báo cáo này trình bày dự án \textbf{U-MobileViT} --- một mạng phân vùng (segmentation) gọn nhẹ
+theo phong cách U-Net lai MobileViT, được thiết kế để chạy thời gian thực trên thiết bị biên
+(Jetson, ARM). Phần thứ nhất mô tả kiến trúc, các tối ưu hóa cấp hệ thống đã thực hiện
+(chia sẻ head đa nhiệm, lượng tử hóa, xuất ONNX/TensorRT) cùng một thư viện khối thị giác và
+transformer tái sử dụng. Phần thứ hai đề xuất \textbf{tính mới} của dự án:
+\emph{Inverted Nonlinear Low-rank Attention} (INLA), một cơ chế attention nhẹ áp dụng phép nâng
+đặc trưng phi tuyến theo tinh thần inverted bottleneck \emph{trước} bước tổng hợp linear attention,
+nhằm làm chậm hiện tượng suy giảm hạng (rank collapse) và thoái hóa phổ trong các backbone nhỏ
+trong khi vẫn giữ độ phức tạp tuyến tính theo số token.
+
+Nghiên cứu theo đuổi ba lớp kết quả: (i) mô tả cơ chế rank collapse / spectral degeneration;
+(ii) xây dựng các mệnh đề và phân tích cục bộ về tác động của feature lifting lên effective rank,
+singular value decay và conditioning; (iii) hiện thực INLA như một module thật trong codebase và
+kiểm chứng sơ bộ bằng thực nghiệm. Chúng tôi báo cáo các số liệu \emph{đo thật} trên mã nguồn của
+dự án: độ phức tạp được xác nhận tuyến tính theo số token, chi phí tham số tăng thêm khiêm tốn,
+công cụ chẩn đoán phổ được kiểm định đúng đắn, và một thí nghiệm thăm dò rank collapse minh họa cả
+trường hợp cơ chế lộ rõ (attention thuần) lẫn trường hợp bị che khuất (có residual). Tinh thần
+xuyên suốt là trung thực về điều kiện áp dụng: chỉ ra khi nào nonlinear lifting thực sự giúp ích và
+khi nào nó chỉ tạo overhead.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =========================================================
+\section{Mở đầu}
+
+\subsection{Bối cảnh dự án}
+Dự án xuất phát từ nhu cầu thực tế: triển khai một mô hình phân vùng ảnh chất lượng tốt nhưng
+\emph{đủ nhẹ để chạy thời gian thực trên thiết bị biên} (Jetson Nano/Orin, ARM, NPU). Transformer
+và attention đã trở thành nền tảng quan trọng của học sâu nhờ khả năng mô hình hóa phụ thuộc xa và
+tương tác toàn cục giữa các token \cite{vaswani2017attention}. Tuy nhiên self-attention tiêu chuẩn
+có độ phức tạp và bộ nhớ bậc hai theo số token, trở thành nút thắt khi triển khai trên phần cứng
+hạn chế tài nguyên.
+
+Nhiều hướng \emph{efficient attention} và \emph{linear attention} đã được đề xuất nhằm xấp xỉ hoặc
+thay thế self-attention bằng các phép tính chi phí thấp hơn \cite{katharopoulos2020transformers,
+shen2020efficient, choromanski2021performer, wang2020linformer, xiong2021nystromformer,
+qin2022cosformer}. Điểm chung là tránh xây dựng trực tiếp ma trận tương tác token--token kích thước
+$N\times N$, dựa vào kernel feature maps, low-rank approximation, random features hoặc các phép phân
+rã khác để giảm chi phí xuống gần tuyến tính. Backbone của dự án (U-MobileViT) chính là một hiện
+thực theo hướng này: kết hợp convolution nhẹ (MobileNetV2) với linear attention kiểu MobileViTv2
+\cite{mobilenetv2, mobilevitv1, mobilevitv2}.
+
+\subsection{Vấn đề cốt lõi}
+Khi chi phí được giảm mạnh, câu hỏi quan trọng không chỉ là ``có chạy nhanh hơn không'' mà còn là
+``chất lượng biểu diễn còn lại như thế nào''. Trọng tâm của phần nghiên cứu là hiện tượng
+\textbf{rank collapse} và \textbf{spectral degeneration} trong linear attention. Khi ánh xạ feature
+map bị hạn chế, nhiều query khác nhau có thể bị chiếu vào các hướng gần giống nhau; lặp lại qua
+nhiều lớp, attention map kém đa dạng, singular values suy giảm nhanh, và biểu diễn token đồng nhất
+hóa dần. Hiện tượng này đặc biệt đáng lo trong backbone nhẹ, nơi chiều ẩn, số head và ngân sách
+tính toán đều bị giới hạn.
+
+\subsection{Câu hỏi nghiên cứu trung tâm}
+\begin{quote}
+\textbf{Liệu một cơ chế inverted nonlinear feature lifting có thể làm chậm tốc độ suy giảm hạng và
+ổn định cấu trúc phổ của linear attention theo chiều sâu mạng, trong khi vẫn duy trì độ phức tạp
+tuyến tính và tính hiệu quả cho mô hình gọn nhẹ?}
+\end{quote}
+
+\subsection{Định vị học thuật}
+Báo cáo này không phải pure theory, cũng không phải thuần ``thay module rồi báo cáo accuracy''.
+Định vị phù hợp là \textit{mechanism-level research with theoretical analysis and empirical
+validation}: cơ chế là câu hỏi chính, chứng minh là công cụ làm rõ cơ chế, thực nghiệm là bước
+kiểm tra tính đúng đắn và hữu ích.
+
+\subsection{Đóng góp}
+\begin{itemize}
+    \item \textbf{Hệ thống:} một backbone U-MobileViT chạy được thời gian thực, kèm tối ưu hóa edge
+    (chia sẻ head đa nhiệm giảm 26\% FLOPs, xuất ONNX/TorchScript, lượng tử hóa) --- xem
+    Mục~\ref{sec:project}.
+    \item \textbf{Kỹ thuật phần mềm:} một thư viện khối thị giác \& transformer tái sử dụng
+    (\texttt{cv\_nets.blocks}) và công cụ chẩn đoán phổ (\texttt{cv\_nets.utils.spectral}).
+    \item \textbf{Cơ chế \& lý thuyết:} làm rõ rank collapse trong linear attention và xây dựng các
+    mệnh đề/định lý cục bộ về tác động của nonlinear lifting --- Mục~\ref{sec:theory}.
+    \item \textbf{Tính mới INLA:} hiện thực INLA như một module thật, tích hợp vào codebase, kèm
+    kiểm chứng thực nghiệm sơ bộ --- Mục~\ref{sec:method},~\ref{sec:impl},~\ref{sec:exp}.
+\end{itemize}
+
+% =========================================================
+\section{Dự án U-MobileViT: kiến trúc và tối ưu hóa edge}
+\label{sec:project}
+
+\subsection{Tổng quan kiến trúc}
+U-MobileViT là một mạng encoder--decoder dạng U-Net cho phân vùng dày đặc (dense prediction).
+Encoder gồm một \emph{stem} ba lớp convolution stride-2 (hạ mẫu $\times 8$) rồi ba \emph{stage},
+mỗi stage có một lớp hạ mẫu depthwise stride-2 và các lớp MobileViT (khối cục bộ depthwise-separable
++ khối toàn cục transformer dùng \emph{separable/linear attention}). Decoder gồm các stage nâng mẫu
+với transformer cross-attention nối tắt (skip) tới encoder; cuối cùng là \emph{segmentation head}
+phục hồi độ phân giải và phân loại pixel. Mô hình hỗ trợ đa nhiệm (nhiều head song song) hoặc đơn
+nhiệm.
+
+\subsection{Linear/separable attention trong backbone}
+Thay vì tính trực tiếp $\operatorname{Softmax}(\mathbf{Q}\mathbf{K}^T)$, backbone dùng dạng
+separable attention với một \emph{context vector} toàn cục, đạt độ phức tạp tuyến tính theo số
+token --- nền tảng để chèn attention vào mô hình thời gian thực. Chính đặc điểm này khiến backbone
+là đối tượng lý tưởng để nghiên cứu rank collapse và đề xuất INLA.
+
+\subsection{Tối ưu hóa cấp hệ thống đã thực hiện}
+Một số tối ưu hóa đã được hiện thực và đo đạc trong dự án:
+\begin{itemize}
+    \item \textbf{Chia sẻ head đa nhiệm:} thay vì chạy lại toàn bộ pipeline nâng mẫu + tinh chỉnh
+    cho \emph{mỗi} tác vụ, ta chạy phần này \emph{một lần} và chỉ tách nhánh ở bộ phân loại nhẹ cho
+    mỗi tác vụ (chuẩn thiết kế YOLOP/HybridNets). Kết quả đo: tổng FLOPs giảm từ $0.301$ xuống
+    $0.222$ GFLOPs ($-26\%$), riêng segmentation head giảm $\sim 45\%$; độ trễ CPU giảm $\sim 25\%$.
+    \item \textbf{Công cụ xuất \& benchmark cho Jetson:} fuse Conv+BN, xuất \textbf{ONNX} (cho
+    TensorRT) và TorchScript, benchmark FP32/FP16 GPU và INT8 dynamic CPU. Trên GPU tham chiếu, mô
+    hình đạt $\sim 124$ FPS ở FP32, độ phân giải $320\times 320$.
+    \item \textbf{Thư viện khối tái sử dụng:} \texttt{cv\_nets.blocks} cung cấp các khối chuẩn
+    (ConvNormAct, MV2Block/InvertedResidual có SE, DepthwiseSeparableConv), attention nhẹ
+    (SqueezeExcite, ECA, CBAM), transformer (PatchEmbed, MHSA, TransformerEncoderBlock), khối lai
+    MobileViTBlock, và --- là tính mới của báo cáo này --- INLA.
+\end{itemize}
+
+% =========================================================
+\section{Cơ sở lý thuyết và động cơ thiết kế của INLA}
+\label{sec:theory}
+
+\subsection{Triết lý bottleneck--expansion từ mô hình nhẹ}
+MobileNetV2 cho thấy không gian trung gian rộng hơn giúp học biểu diễn tốt hơn, trong khi bottleneck
+ở đầu vào/đầu ra giữ chi phí thấp \cite{mobilenetv2}. MobileViT cho thấy attention có thể nhúng vào
+backbone nhẹ nếu cấu trúc được điều chỉnh cẩn thận \cite{mobilevitv1, mobilevitv2}. Từ đó nảy sinh
+ý tưởng \emph{inverted nonlinear feature lifting}: trước khi aggregation toàn cục, ta mở rộng biểu
+diễn lên một không gian cao hơn để làm phong phú basis mà attention vận hành trên đó.
+
+\subsection{Rank collapse và spectral degeneration}
+Nhiều nghiên cứu chỉ ra attention sâu có thể dẫn tới suy giảm hạng nghiêm trọng theo chiều sâu
+\cite{dong2021rankcollapse}, và multi-head attention chịu một \emph{low-rank bottleneck} khi chiều
+mỗi head quá nhỏ \cite{bhojanapalli2020low}. Có thể đo bằng: effective rank của biểu diễn, tốc độ
+suy giảm singular values, spectral entropy, và các chỉ số oversmoothing. Trong linear attention,
+mối lo này càng rõ vì không gian feature map đã bị ràng buộc trước.
+
+\subsection{Tại sao cần nonlinear lifting}
+Mục tiêu không phải phình mô hình vô điều kiện, mà tạo một vùng trung gian nơi mô hình học được
+basis phong phú hơn trước khi bị nén lại: (i) thêm chiều tự do để các query không bị ép vào cùng
+một cấu trúc; (ii) làm mềm sự co cụm của singular values; (iii) cung cấp mức phi tuyến đủ để thích
+ứng dữ liệu thực mà không vượt giới hạn tính toán.
+
+% =========================================================
+\section{Mệnh đề lý thuyết và giả thuyết nghiên cứu}
+
+\subsection{Các định nghĩa làm việc}
+\begin{definition}[Hạng hiệu dụng]
+Với ma trận $\mathbf{M}$ có singular values $\sigma_1 \geq \sigma_2 \geq \cdots \geq 0$, hạng hiệu
+dụng được định nghĩa (Roy \& Vetterli) là $\mathrm{erank}(\mathbf{M}) = \exp\!\big(H(p)\big)$ với
+$p_i = \sigma_i / \sum_j \sigma_j$ và $H$ là entropy Shannon --- đo số chiều thực sự đóng góp đáng
+kể cho biểu diễn.
+\end{definition}
+
+\begin{definition}[Suy giảm phổ]
+Biểu diễn có spectral degeneration mạnh nếu singular values giảm nhanh, dẫn tới một số ít chiều chi
+phối phần lớn năng lượng của ma trận.
+\end{definition}
+
+\begin{definition}[Rank collapse]
+Hiện tượng qua nhiều lớp, biểu diễn token mất dần độ đa dạng tuyến tính, dẫn đến effective rank
+giảm và các token trở nên tương tự nhau hơn.
+\end{definition}
+
+\subsection{Mệnh đề định hướng}
+\begin{proposition}[Giảm xác suất nhập nhằng biểu diễn]
+Nếu attention được tính trên một feature map có bậc tự do lớn hơn, sinh bởi một lifting phi tuyến đủ
+giàu, thì các query khác nhau có xu hướng tạo ra các phân phối attention tách biệt hơn so với feature
+map quá thấp chiều. Đây là khả năng phân biệt cục bộ, không phải injective toàn cục.
+\end{proposition}
+
+\begin{proposition}[Cải thiện cận trên của hạng hiệu dụng]
+Với bộ đệm Key--Value trong linear attention, hạng biểu diễn khả dụng bị giới hạn bởi số chiều của
+không gian đặc trưng trung gian. Khi lifting mở rộng không gian lên $r$ chiều với $r > d_k$, cận trên
+thực dụng của effective rank có thể tăng, làm chậm suy giảm phổ khi xếp chồng sâu hơn.
+\end{proposition}
+
+\begin{proposition}[Ổn định phổ dưới inverted lifting]
+Nếu nonlinear lifting kết hợp với chuẩn hóa và regularization phù hợp, phổ singular value của
+attention map có thể duy trì phân bố ít dốc hơn so với baseline tuyến tính, đặc biệt ở các lớp trung
+gian của backbone sâu.
+\end{proposition}
+
+\subsection{Bổ đề kỹ thuật}
+\begin{lemma}[Tổng hợp tuyến tính qua basis mở rộng]
+Giả sử $\hat{\mathbf{K}} \in \mathbb{R}^{N \times r}$ và $\mathbf{V} \in \mathbb{R}^{N \times d_v}$.
+Khi tính $\mathbf{S}=\hat{\mathbf{K}}^T\mathbf{V}$, mọi thông tin từ $\mathbf{V}$ chỉ đi qua $r$ trục
+basis của không gian trung gian. Nếu $r$ tăng nhưng vẫn được regularization kiểm soát, mô hình có
+thể lưu giữ nhiều mẫu tương tác hơn trước khi bị nén ở đầu ra.
+\end{lemma}
+\begin{proof}[Phác thảo]
+$\hat{\mathbf{K}}^T\mathbf{V}$ là phép chiếu dữ liệu lên basis của $\hat{\mathbf{K}}$. Khi $r$ nhỏ,
+basis nghèo và các mẫu tương tác bị đồng nhất hóa nhanh; khi $r$ lớn hơn, số hướng mà $\mathbf{V}$
+được nén vào tăng lên. Vì $\mathbf{S}$ là đại diện nén của toàn chuỗi, số basis hữu ích tăng làm
+tăng khả năng bảo toàn cấu trúc phổ.
+\end{proof}
+
+\begin{lemma}[Phi tuyến làm thay đổi độ cong không gian đặc trưng]
+Nếu $\Phi_{\mathrm{INLA}}$ chứa ít nhất một thành phần phi tuyến trơn, ánh xạ từ token gốc sang không
+gian attention không còn là affine thuần túy, làm tăng khả năng tách các cụm token vốn gần nhau.
+\end{lemma}
+\begin{proof}[Phác thảo]
+Phép affine chỉ tạo các siêu phẳng song song, không đủ bẻ cong biên quyết định. Thành phần phi tuyến,
+dù nhẹ, làm ánh xạ giàu hơn về hình học; các token gần nhau nhưng khác ở hướng phi tuyến có thể bị
+đẩy sang các miền đặc trưng khác nhau, giảm nguy cơ nhiều query bị chiếu vào cùng một cấu trúc.
+\end{proof}
+
+\begin{theorem}[Chậm hóa rank collapse, cục bộ và có điều kiện]
+Xét một block linear attention với feature map cố định và một block INLA với lifting phi tuyến, các
+tham số lifting bị ràng buộc bởi chuẩn hóa/regularization đủ mạnh. Khi token đầu vào có tương quan
+trung bình và không gian sau lifting có $r > d_k$, tồn tại một ngưỡng độ sâu mà INLA duy trì phổ
+rộng hơn baseline, tức tốc độ suy giảm effective rank qua các lớp bị chậm lại.
+\end{theorem}
+\begin{proof}[Phác thảo]
+Kết quả mang tính cục bộ và điều kiện. Baseline vận hành trên feature map hạn chế nên khi xếp chồng
+sâu, các vector key/query dễ hội tụ vào vài hướng chủ đạo. INLA thêm lifting phi tuyến trước
+aggregation, tăng số basis truy cập được trong không gian trung gian. Nếu regularization đủ ngăn
+bùng nổ biên độ và $r > d_k$ nhưng chưa gây nhiễu mạnh, attention duy trì nhiều thành phần độc lập
+hơn, nên effective rank giảm chậm hơn theo độ sâu. Đây là lập luận cấu trúc, được kiểm tra bằng
+ablation và đo singular value decay trong thực nghiệm (Mục~\ref{sec:exp}).
+\end{proof}
+
+\subsection{Giả thuyết thực nghiệm}
+\begin{quote}
+\textbf{H1:} Tăng hạng của bộ đệm KV qua không gian mở rộng giúp INLA duy trì phổ singular value dồi
+dào hơn và chặn tốc độ suy giảm hạng so với linear attention cổ điển khi độ sâu tăng.
+\end{quote}
+\begin{quote}
+\textbf{H2:} Cơ chế lifting học được làm giảm oversmoothing và tăng attention diversity, thể hiện qua
+độ phân tán attention, entropy phổ và độ ổn định gradient.
+\end{quote}
+\begin{quote}
+\textbf{H3:} Lợi ích cấu trúc không chuyển hóa thành cải thiện downstream đồng đều ở mọi setting; tác
+động của INLA phụ thuộc mạnh vào depth, sequence length, nhiệm vụ và mức regularization.
+\end{quote}
+
+% =========================================================
+\section{Phương pháp đề xuất: INLA}
+\label{sec:method}
+
+\subsection{Tổng quan}
+INLA được xây dựng theo tinh thần inverted bottleneck:
+\begin{center}
+\textit{compression $\rightarrow$ nonlinearity $\rightarrow$ expansion $\rightarrow$ linear attention aggregation}
+\end{center}
+Một tầng phi tuyến được đưa vào giữa hai bước tuyến tính có kiểm soát, buộc attention đi qua một
+không gian trung gian giàu hơn thay vì hoạt động ngay trên biểu diễn gốc.
+
+\subsection{Ánh xạ lifting}
+Cho $\mathbf{X} \in \mathbb{R}^{N \times d}$, định nghĩa
+\begin{equation}
+\Phi_{\mathrm{INLA}}(\mathbf{X}) = \sigma\!\left(\mathbf{X}\mathbf{W}_{\mathrm{low}} + \mathbf{1}\mathbf{b}_{\mathrm{low}}^T\right)\mathbf{W}_{\mathrm{exp}} + \mathbf{1}\mathbf{b}_{\mathrm{exp}}^T,
+\end{equation}
+với $\mathbf{W}_{\mathrm{low}} \in \mathbb{R}^{d \times d_k}$ (nén), $\mathbf{W}_{\mathrm{exp}} \in
+\mathbb{R}^{d_k \times r}$ (mở rộng), $\sigma$ là GeLU/SiLU, $d_k < d$ và $r > d$. Lifting áp dụng
+cho query và key, còn value giữ nguyên:
+\begin{equation}
+\hat{\mathbf{Q}} = \Phi_{\mathrm{INLA}}(\mathbf{Q}), \quad
+\hat{\mathbf{K}} = \Phi_{\mathrm{INLA}}(\mathbf{K}), \quad
+\hat{\mathbf{V}} = \mathbf{V}.
+\end{equation}
+
+\subsection{Phép tính attention tuyến tính}
+Khai thác tính kết hợp của nhân ma trận để tránh ma trận $N\times N$:
+\begin{equation}
+\mathbf{S} = \hat{\mathbf{K}}^T\mathbf{V} \in \mathbb{R}^{r \times d_v}
+\quad\text{(nén ngữ cảnh toàn cục)},\qquad
+\mathbf{O} = \mathbf{D}^{-1}\big(\hat{\mathbf{Q}}\mathbf{S}\big)
+\quad\text{(truy xuất theo query)},
+\end{equation}
+với chuẩn hóa $\mathbf{d} = \hat{\mathbf{Q}}\big(\hat{\mathbf{K}}^T\mathbf{1}_N\big) \in \mathbb{R}^N$
+và $\mathbf{D} = \operatorname{diag}(\mathbf{d})$. Để mẫu số luôn dương và ổn định lan truyền ngược,
+ta áp một kernel feature map không âm (cụ thể $\psi(z)=\mathrm{ELU}(z)+1$) lên $\hat{\mathbf{Q}},
+\hat{\mathbf{K}}$ sau lifting.
+
+\subsection{Phân tích độ phức tạp}
+Với $\mathbf{X} \in \mathbb{R}^{N \times d}$, chi phí một block INLA là
+\begin{equation}
+\mathcal{O}_{\mathrm{INLA}} = \mathcal{O}\!\Big(N\cdot\big(2dd_k + 2d_kr + 2rd_v\big)\Big),
+\end{equation}
+trong đó $d, d_k, r, d_v$ là siêu tham số cố định. Do đó độ phức tạp theo độ dài chuỗi vẫn là
+$\mathcal{O}(N)$ --- điều kiện nền tảng để INLA phù hợp ngữ cảnh mobile/edge. Tính chất này được
+\emph{xác nhận bằng đo đạc} trong Mục~\ref{sec:exp}.
+
+\subsection{Khác biệt với linear attention cổ điển}
+Linear attention cổ điển dùng feature map cố định hoặc ít tham số nên khả năng điều chỉnh cấu trúc
+phổ hạn chế. INLA bổ sung một \emph{learned feature map có kiểm soát}: lifting xảy ra \emph{trước}
+aggregation và tác động trực tiếp lên không gian mà attention vận hành, nhằm điều chỉnh hình học
+biểu diễn chứ không chỉ tăng số tham số.
+
+% =========================================================
+\section{Hiện thực trong codebase}
+\label{sec:impl}
+
+Tính mới được hiện thực thành module thật trong dự án, ở \texttt{cv\_nets/blocks/inla.py}, và export
+qua \texttt{cv\_nets.blocks}. Trích đoạn cốt lõi (đã rút gọn):
+
+\begin{lstlisting}
+class INLAAttention(nn.Module):
+    def __init__(self, dim, dim_compress=None, dim_expand=None,
+                 act="gelu", use_lifting=True, ...):
+        dim_compress = dim_compress or max(1, dim // 2)   # d_k < d
+        dim_expand   = dim_expand   or (2 * dim)          # r  > d
+        self.q_proj = nn.Linear(dim, dim); self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        if use_lifting:                  # inverted bottleneck: d -> d_k -> (sigma) -> r
+            self.lift = nn.Sequential(nn.Linear(dim, dim_compress),
+                                      get_activation(act),
+                                      nn.Linear(dim_compress, dim_expand))
+
+    def _phi(self, x):                   # lifting + kernel feature map khong am
+        return F.elu(self.lift(x)) + 1.0
+
+    def forward(self, x):                # x: (B, N, d)
+        q = self._phi(self.q_proj(x)); k = self._phi(self.k_proj(x)); v = self.v_proj(x)
+        context = torch.einsum("bnf,bnd->bfd", k, v)        # S = K^T V  (B, F, d)
+        denom   = torch.einsum("bnf,bf->bn", q, k.sum(1)).clamp_min(eps).unsqueeze(-1)
+        out     = torch.einsum("bnf,bfd->bnd", q, context) / denom   # D^-1 (Q S)
+        return self.out_proj(out)
+\end{lstlisting}
+
+Một điểm thiết kế quan trọng phục vụ \emph{ablation công bằng}: cờ \texttt{use\_lifting=False} cho ra
+baseline linear attention dùng \emph{cùng} pipeline (cùng chuẩn hóa, cùng kernel feature map) nhưng
+không có lifting --- nhờ đó mọi khác biệt đo được quy đúng về tác động của lifting. Module
+\texttt{INLATransformerBlock} bọc INLA trong khối pre-norm chuẩn (residual + MLP + DropPath).
+
+Ngoài ra, công cụ chẩn đoán phổ được hiện thực ở \texttt{cv\_nets/utils/spectral.py}:
+\texttt{effective\_rank}, \texttt{spectral\_entropy}, \texttt{singular\_value\_decay}. Các hàm này
+được kiểm định đúng đắn: với ma trận ngẫu nhiên $64\times 48$, $\mathrm{erank}=41.28$ (gần cận trên
+$48$); với ma trận hạng-4 dựng cố ý, $\mathrm{erank}=3.96 \approx 4$ (sai số do nhiễu số học).
+
+% =========================================================
+\section{Kết quả thực nghiệm sơ bộ}
+\label{sec:exp}
+
+Mọi số liệu dưới đây được \emph{đo trực tiếp} trên mã nguồn dự án (script
+\texttt{tools/exp\_rank\_collapse.py} và các probe đi kèm), nhằm kiểm chứng những phát biểu định
+lượng nhất trước khi bước vào huấn luyện đầy đủ.
+
+\subsection{Độ phức tạp được xác nhận tuyến tính theo $N$}
+Bảng~\ref{tab:complexity} đo độ trễ một block INLA (CPU, 4 luồng, $d=64$, $d_k=32$, $r=128$) khi số
+token tăng $32\times$ (từ $196$ lên $6272$). Thời gian trên mỗi token gần như phẳng, độ trễ tổng chỉ
+tăng $\sim 20\times$ chứ không phải $\sim 1024\times$ như attention bậc hai --- khẳng định
+$\mathcal{O}(N)$.
+
+\begin{table}[H]
+\centering
+\caption{Độ trễ theo số token (CPU, 4 luồng). Baseline = INLA với \texttt{use\_lifting=False}.}
+\label{tab:complexity}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+$N$ & base (ms) & INLA (ms) & base ($\mu$s/token) & INLA ($\mu$s/token) \\
+\midrule
+196  & 0.255 & 0.375 & 1.30 & 1.91 \\
+784  & 0.420 & 1.060 & 0.54 & 1.35 \\
+1568 & 1.290 & 2.093 & 0.82 & 1.33 \\
+3136 & 2.508 & 3.665 & 0.80 & 1.17 \\
+6272 & 4.709 & 8.178 & 0.75 & 1.30 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Chi phí tham số khiêm tốn}
+Ở $d=64$, một block baseline có $16\,640$ tham số; INLA ($d_k=32$, $r=128$) có $22\,944$ tham số ---
+tăng thêm $6\,304$ ($+37.9\%$ cho riêng module attention). Trong toàn backbone (phần lớn tham số nằm
+ở convolution), tỷ lệ tăng tổng thể nhỏ hơn nhiều.
+
+\subsection{Thí nghiệm thăm dò rank collapse}
+Theo tinh thần Dong et al.\ \cite{dong2021rankcollapse}, ta xếp chồng $L$ khối và đo effective rank
+của biểu diễn token ($N=196$, $d=64$, trung bình 8 seed) theo độ sâu, ở hai chế độ.
+
+\paragraph{Chế độ attention thuần (cô lập aggregation, không residual/MLP).}
+Cả baseline lẫn INLA đều suy giảm hạng rất nhanh: effective rank rơi từ $\sim 30$ ở lớp 1 xuống
+$\approx 1$ quanh lớp 8--9. Điều này tái lập đúng kết quả lý thuyết ``pure attention loses rank'' và
+cho thấy: khi cô lập, \emph{cơ chế aggregation tự nó} đẩy biểu diễn về hạng 1 bất kể loại attention.
+
+\paragraph{Chế độ khối transformer thực tế (residual + MLP).}
+Bảng~\ref{tab:rank} cho thấy ở khởi tạo ngẫu nhiên, \emph{dòng residual chi phối} và giữ effective
+rank cao ($\sim 31\to 34$, thậm chí tăng nhẹ theo độ sâu); INLA và baseline gần như trùng nhau. Đây
+là một phát hiện trung thực và nhất quán với lý thuyết: rank collapse là hiện tượng của \emph{pure}
+attention, bị residual làm dịu; do đó lợi ích biểu diễn của INLA là \emph{hiệu ứng của chế độ đã
+huấn luyện} (khi trọng số lifting được tối ưu), chứ không phải hiệu ứng ở khởi tạo.
+
+\begin{table}[H]
+\centering
+\caption{Effective rank theo độ sâu trong khối transformer thực tế (residual+MLP), trung bình 8 seed.
+Cận trên lý thuyết $\min(N,d)=64$.}
+\label{tab:rank}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+Độ sâu & erank (baseline) & erank (INLA) & spectral entropy (INLA) \\
+\midrule
+1  & 30.79 & 30.77 & 0.824 \\
+4  & 31.98 & 31.98 & 0.833 \\
+8  & 32.91 & 32.91 & 0.840 \\
+12 & 33.55 & 33.57 & 0.845 \\
+16 & 34.09 & 34.11 & 0.849 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Diễn giải}
+Kết quả ủng hộ giả thuyết H3 một cách rõ ràng: tác động của INLA \emph{có điều kiện}. Hạ tầng chẩn
+đoán (effective rank, spectral entropy, singular value decay) và thiết kế ablation
+(\texttt{use\_lifting} on/off) đã sẵn sàng để kiểm tra H1, H2 \emph{trong quá trình huấn luyện thật},
+nơi trọng số lifting được tối ưu theo dữ liệu --- đó là bước tiếp theo tự nhiên của dự án.
+
+% =========================================================
+\section{Tích hợp INLA vào backbone nhẹ}
+
+\subsection{Vị trí}
+INLA phù hợp nhất khi thay/bổ sung cho các stage \emph{trung gian--sâu} của backbone, nơi số token
+đã giảm (sau vài lần hạ mẫu) và receptive field đủ rộng để attention toàn cục có ý nghĩa. Stem và các
+stage đầu nên giữ thiên hướng convolution để tiết kiệm chi phí; head cuối dùng pooling/projection
+nhẹ.
+
+\subsection{Các biến thiết kế cần kiểm soát}
+$d_k$ (chiều nén), $r$ (chiều mở rộng), loại activation $\sigma$, vị trí normalization, số head, và
+regularization trên ma trận chiếu/đầu ra expansion. Cấu hình mặc định đề xuất: $d_k$ đủ nhỏ để rẻ
+nhưng không quá hẹp; $r > d$ ở mức vừa phải để tránh khuếch đại nhiễu; GeLU/SiLU; normalization ngay
+sau aggregation; regularization nhẹ trên lifting để kiểm soát trade-off rank--efficiency.
+
+% =========================================================
+\section{Kế hoạch thực nghiệm đầy đủ}
+
+\subsection{Baseline cho ablation công bằng}
+Cùng backbone, cùng số stage/hidden size, gần tương đương FLOPs, gồm: (1) linear attention tiêu
+chuẩn; (2) kernel feature map cố định; (3) lifting tuyến tính (bỏ phi tuyến); (4) phi tuyến nhưng
+không expansion; (5) expansion nhưng không regularization. Trong codebase, các biến (1) và (toàn bộ
+INLA) đã có sẵn qua cờ \texttt{use\_lifting}; các biến còn lại là chỉnh sửa nhỏ trên \texttt{lift}.
+
+\subsection{Chỉ số đánh giá}
+\begin{table}[H]
+\centering
+\caption{Khung đánh giá đề xuất}
+\label{tab:metrics}
+\begin{tabular}{@{}p{4cm}p{10cm}@{}}
+\toprule
+\textbf{Nhóm} & \textbf{Chỉ số} \\
+\midrule
+Cấu trúc biểu diễn & Effective rank, spectral entropy, singular value decay \\
+Hành vi attention & Diversity, oversmoothing, gradient norm/variance, loss smoothness \\
+Hiệu năng hệ thống & Latency, throughput, peak memory, FLOPs, số tham số \\
+Hiệu năng tác vụ & IoU/Top-1/F1 tùy bài toán \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =========================================================
+\section{Phân tích failure modes}
+
+\begin{itemize}
+    \item \textbf{$r$ quá lớn:} lifting khuếch đại nhiễu thay vì trích đặc trưng; hạng đại số tăng
+    nhưng tín hiệu hữu ích không tăng tương ứng $\Rightarrow$ overfit.
+    \item \textbf{Backbone quá nông:} rank collapse chưa đủ nghiêm trọng để INLA tạo lợi ích; lifting
+    chỉ thêm chi phí. (Phù hợp với kết quả ở Mục~\ref{sec:exp}: ở khởi tạo/độ sâu vừa, khác biệt nhỏ.)
+    \item \textbf{Task cục bộ:} nếu nhiệm vụ chủ yếu dựa đặc trưng cục bộ, basis attention giàu hơn
+    không tương xứng lợi ích; backbone thuần conv có thể cạnh tranh tốt hơn.
+    \item \textbf{Regularization sai mức:} quá mạnh thì lifting mất tác dụng; quá yếu thì mất kiểm
+    soát trade-off rank--efficiency.
+\end{itemize}
+
+Ngay cả khi INLA không cải thiện mạnh downstream, dự án vẫn có giá trị nếu chỉ ra được: cấu trúc phổ
+thay đổi đúng dự báo, miền hoạt động hiệu quả của nonlinear lifting, và hướng dẫn thiết kế attention
+nhẹ.
+
+% =========================================================
+\section{Lộ trình thực hiện}
+\begin{enumerate}[leftmargin=*]
+    \item Rà soát tài liệu, chốt baseline và phạm vi tác vụ, hoàn thiện câu hỏi/giả thuyết.
+    \item Dựng backbone cơ sở (MV2Block + linear attention), cố định cấu hình, đảm bảo train ổn định.
+    \item \textbf{Tích hợp INLA} (đã hoàn thành ở mức module): pipeline compression--nonlinearity--expansion,
+    khảo sát activation, $d_k$, $r$, normalization. \emph{(Hoàn tất phần hiện thực + kiểm thử.)}
+    \item Ablation + đo cấu trúc (effective rank, spectral entropy, singular value decay) theo depth
+    và sequence length, nhiều seed. \emph{(Hạ tầng đã sẵn sàng.)}
+    \item Đối chiếu thực nghiệm với các mệnh đề; phân tích failure modes bằng dữ liệu.
+    \item Đánh giá hiệu năng thực tế (IoU/latency/memory/FLOPs) và trade-off.
+    \item Tổng hợp, hoàn thiện báo cáo, điều chỉnh limitation để tránh overclaim.
+\end{enumerate}
+
+% =========================================================
+\section{Kết luận}
+
+Báo cáo định vị INLA không phải sự thay thế đại trà cho mọi attention, mà là một \emph{can thiệp có
+kiểm soát} lên cấu trúc phổ của linear attention trong backbone thị giác gọn nhẹ. Chúng tôi đã: (i)
+mô tả cơ chế rank collapse và động cơ thiết kế; (ii) xây dựng các định nghĩa, mệnh đề, bổ đề và một
+định lý cục bộ giải thích vì sao INLA có thể làm chậm suy giảm hạng trong miền giả thiết rõ ràng;
+(iii) \emph{hiện thực INLA thành module thật} trong codebase, kèm công cụ chẩn đoán phổ và thiết kế
+ablation công bằng; (iv) báo cáo các số liệu đo thật: độ phức tạp được xác nhận tuyến tính theo số
+token, chi phí tham số khiêm tốn, và một thí nghiệm thăm dò rank collapse trung thực.
+
+Phát hiện thực nghiệm sơ bộ nhấn mạnh tính \emph{có điều kiện} của lợi ích (giả thuyết H3): ở khởi
+tạo ngẫu nhiên, residual che khuất khác biệt, trong khi cơ chế collapse lộ rõ ở attention thuần. Vì
+trọng số lifting là tham số học được, kiểm chứng H1/H2 thuộc về chế độ đã huấn luyện --- và toàn bộ
+hạ tầng đo lường cần thiết đã được dựng sẵn. Chính sự minh bạch về điều kiện áp dụng làm cho nghiên
+cứu có giá trị học thuật thực sự, và mở ra một cách nhìn về thiết kế attention nhẹ: không chỉ tối ưu
+FLOPs, mà còn điều khiển hình học biểu diễn bên trong attention.
+
+% =========================================================
+\begin{thebibliography}{99}
+
+\bibitem{vaswani2017attention}
+A. Vaswani et al., ``Attention is all you need,'' in \textit{NeurIPS}, 2017.
+
+\bibitem{mobilenetv2}
+M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, ``MobileNetV2: Inverted residuals and linear bottlenecks,'' in \textit{CVPR}, 2018.
+
+\bibitem{mobilevitv1}
+S. Mehta and M. Rastegari, ``MobileViT: Light-weight, general-purpose, and mobile-friendly vision transformer,'' in \textit{ICLR}, 2022.
+
+\bibitem{mobilevitv2}
+S. Mehta and M. Rastegari, ``Separable self-attention for mobile vision transformers,'' \textit{TMLR}, 2023.
+
+\bibitem{katharopoulos2020transformers}
+A. Katharopoulos, A. Vyas, N. Pappas, and F. Fleuret, ``Transformers are RNNs: Fast autoregressive transformers with linear attention,'' in \textit{ICML}, 2020.
+
+\bibitem{shen2020efficient}
+Z. Shen, M. Zhang, H. Zhao, S. Yi, and H. Li, ``Efficient attention: Attention with linear complexities,'' in \textit{WACV}, 2021.
+
+\bibitem{dong2021rankcollapse}
+Y. Dong, J.-B. Cordonnier, and A. Loukas, ``Attention is not all you need: Pure attention loses rank doubly exponentially with depth,'' in \textit{ICML}, 2021.
+
+\bibitem{bhojanapalli2020low}
+S. Bhojanapalli, C. Yun, A. S. Rawat, S. Reddi, and S. Kumar, ``Low-rank bottleneck in multi-head attention models,'' in \textit{ICML}, 2020.
+
+\bibitem{choromanski2021performer}
+K. Choromanski et al., ``Rethinking attention with performers,'' in \textit{ICLR}, 2021.
+
+\bibitem{wang2020linformer}
+S. Wang, B. Z. Li, M. Khabsa, H. Fang, and H. Ma, ``Linformer: Self-attention with linear complexity,'' \textit{arXiv:2006.04768}, 2020.
+
+\bibitem{xiong2021nystromformer}
+Y. Xiong et al., ``Nyströmformer: A Nyström-based algorithm for approximating self-attention,'' in \textit{AAAI}, 2021.
+
+\bibitem{qin2022cosformer}
+Z. Qin et al., ``cosFormer: Rethinking softmax in attention,'' in \textit{ICLR}, 2022.
+
+\end{thebibliography}
+
+\end{document}
