@@ -229,7 +229,7 @@ coco_leaf/
 .claude
 
 
-.pth
-.pt
-.onnx
-.zip
+*.pth
+*.pt
+*.onnx
+*.zip
