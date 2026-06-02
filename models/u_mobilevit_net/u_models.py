@@ -88,6 +88,25 @@ class UMobileViT(BaseLayer):
         )
         self.init_str = get_param(self.opts, initializer, "initializer", "he_uniform")
 
+        # [ĐÃ SỬA] Áp dụng variant config cho các tham số không được truyền
+        # trực tiếp. Phòng thủ chống lại trường hợp opts chứa defaults từ
+        # ArgumentParser (d_model=64, expansion=3.0, ...) ghi đè cấu hình
+        # của variant pro/promax. Thứ tự ưu tiên:
+        #   explicit arg > variant config > opts default > hardcoded default
+        if variant_name is not None:
+            if expansion_factor is None:
+                self.expansion_factor = var_cfg.get(
+                    "expansion_factor", self.expansion_factor
+                )
+            if num_transformer_block is None:
+                self.num_transformer_block = var_cfg.get(
+                    "num_transformer_blocks", self.num_transformer_block
+                )
+            if norm_num_groups is None:
+                self.norm_num_groups = var_cfg.get(
+                    "target_groups", self.norm_num_groups
+                )
+
         assert self.alpha > 0, f"alpha must be greater than zero, got alpha={self.alpha}"
 
         scaled_d_model = int(self.alpha * self.base_d_model)

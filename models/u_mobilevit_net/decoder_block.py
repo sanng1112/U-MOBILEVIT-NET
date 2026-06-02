@@ -55,7 +55,7 @@ class UMobileViTDecoderLayer(_UMobileViTLayer):
         patch_h, patch_w = self.fold_params["kernel_size"]
 
         # local block forward
-        Z = self.local_block(input) # (N, C, H, W)
+        Z = self._local_forward(input) # (N, C, H, W)
 
         # Align memory spatial size to match Z (encoder skip may differ from decoder upsample)
         H, W = Z.shape[2], Z.shape[3]
@@ -104,17 +104,20 @@ class UMobileViTDecoderLayer(_UMobileViTLayer):
 class UMobileViTDecoderConcatLayer(_UMobileViTLayer):
     def __init__(self, opts: Optional[Any] = None, **kwargs) -> None:
         """
-        Implement the custom global block. Instead of performing self-attention and 
+        Implement the custom global block. Instead of performing self-attention and
         cross-attention, this global block will project the encoder feature-added feature map
         to the model space.
         """
         self.opts = opts or kwargs.get("opts", None)
         kwargs["opts"] = self.opts
         super().__init__(transformer_block=None, **kwargs)
-        
+
         in_channels = kwargs.get("in_channels")
         bias = kwargs.get("bias", True)
-        
+
+        # [ĐÃ SỬA] Tạo memory_proj và global_block SAU super().__init__()
+        # để self.initializer đã được thiết lập. Sau đó gọi _reset_parameters()
+        # để khởi tạo các Conv2d này với đúng he_uniform scheme.
         self.memory_proj = Sequential(
             Conv2d(
                 opts=self.opts,
@@ -126,7 +129,7 @@ class UMobileViTDecoderConcatLayer(_UMobileViTLayer):
             ),
             ReLU(inplace=True),
         )
-        
+
         self.global_block = Sequential(
             Conv2d(
                 opts=self.opts,
@@ -149,8 +152,29 @@ class UMobileViTDecoderConcatLayer(_UMobileViTLayer):
             ReLU(inplace=True),
         )
 
+        # [ĐÃ SỬA] Khởi tạo lại — super().__init__() chỉ init local_block và expansion_block
+        # (đều là Identity/Dropout khi transformer_block=None). memory_proj và global_block
+        # mới tạo ở trên cần được init với he_uniform.
+        self._init_concat_layers()
+
     def _reset_parameters(self) -> None:
+        """Khởi tạo lại toàn bộ tham số của layer — cả parent và các conv riêng."""
         super()._reset_parameters()
+        # Chỉ gọi _init_concat_layers nếu các layer đã được tạo
+        if hasattr(self, 'memory_proj') and hasattr(self, 'global_block'):
+            self._init_concat_layers()
+
+    def _init_concat_layers(self) -> None:
+        """Khởi tạo memory_proj và global_block với he_uniform.
+
+        Tách riêng để có thể gọi lại khi cần (e.g., sau khi load checkpoint
+        với weight không tương thích).
+        """
+        for layer in self.memory_proj:
+            if isinstance(layer, Conv2d):
+                self.initializer(layer.weight)
+                if getattr(layer, "bias", None) is not None:
+                    zeros_(layer.bias)
         for layer in self.global_block:
             if isinstance(layer, Conv2d):
                 self.initializer(layer.weight)
@@ -164,8 +188,8 @@ class UMobileViTDecoderConcatLayer(_UMobileViTLayer):
             input.size(1) == memory.size(1)
         ), f"Decoder concatenative block expected input and memory have the same channels, got {input.size(1)} and {memory.size(1)}"
 
-        # local block forward
-        Z = self.local_block(input) # (N, C, H, W)
+        # local block forward (float32-protected via _local_forward)
+        Z = self._local_forward(input) # (N, C, H, W)
 
         # global block forward (Additive memory projection)
         # Align memory spatial size to match Z (encoder skip may differ from decoder upsample)

@@ -137,11 +137,43 @@ class SeparableAttention(BaseLayer):
         value: Tensor,
         need_context_scores: bool = False
     ) -> Tensor | Tuple[Tensor, Tensor]:
-        
+
         assert query.dim() == 4, f"Expected query have 4 dimensions, got {query.shape}."
         assert key.dim() == 4, f"Expected key have 4 dimensions, got {key.shape}."
         assert value.dim() == 4, f"Expected value have 4 dimensions, got {value.shape}."
-        
+
+        # [ĐÃ SỬA - Cách C] Selective float32 cho attention: luôn ép attention
+        # chạy float32 trên CUDA, không kiểm tra torch.is_autocast_enabled().
+        #
+        # Lý do: khi torch.utils.checkpoint gọi lại SeparableAttention trong
+        # backward pass, autocast đã tắt → nếu dùng float16 cho recompute,
+        # QKV projection dễ overflow (>65504) gây NaN gradient. Kiểm tra
+        # device.type == 'cuda' đảm bảo cả forward (AMP) và backward
+        # recompute đều được bảo vệ.
+        if query.device.type == 'cuda':
+            with torch.cuda.amp.autocast(enabled=False):
+                result = separable_attention_forward(
+                    query=query.float(),
+                    key=key.float(),
+                    value=value.float(),
+                    channels_to_check=self.in_channels,
+                    in_proj_weight=self.in_proj_weight,
+                    in_proj_bias=self.in_proj_bias,
+                    out_proj_weight=self.out_proj_weight,
+                    out_proj_bias=self.out_proj_bias,
+                    dropout_p=self.dropout_p,
+                    q_proj_weight=self.q_proj_weight,
+                    k_proj_weight=self.k_proj_weight,
+                    v_proj_weight=self.v_proj_weight,
+                    use_separate_proj_weight=not self._qkv_same_channels,
+                    training=self.training,
+                    need_context_scores=need_context_scores
+                )
+                # Cast output về dtype gốc để downstream conv tiếp tục float16
+                if isinstance(result, tuple):
+                    return tuple(r.to(query.dtype) for r in result)
+                return result.to(query.dtype)
+
         return separable_attention_forward(
             query=query,
             key=key,

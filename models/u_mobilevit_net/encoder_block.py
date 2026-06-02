@@ -48,7 +48,7 @@ class UMobileViTEncoderLayer(_UMobileViTLayer):
         assert input.dim() == 4, f"Encoder block expected input have 4 dimensions, got {input.dim()}."
         N, C, *input_size = input.shape
 
-        Z = self.local_block(input)
+        Z = self._local_forward(input)
 
         # Pad spatial dims to be divisible by patch_size (fixes odd-size inputs like 23)
         patch_h, patch_w = self.fold_params["kernel_size"]

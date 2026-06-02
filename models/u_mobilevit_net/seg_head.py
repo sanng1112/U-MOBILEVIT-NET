@@ -158,14 +158,31 @@ class UpsampleHead(BaseLayer):
         
         self.layers = ModuleList([
             self.upsample_head_x2,
-            self.upsample_head_x4, 
+            self.upsample_head_x4,
             self.upsample_head_x8,
         ])
-    
+
+        # [ĐÃ SỬA] Khởi tạo các Conv2d 1x1 pointwise trong UpsampleHead
+        # Trước đây chúng chỉ dựa vào default init của custom Conv2d,
+        # không nhất quán với he_uniform của phần còn lại của model.
+        self._reset_parameters()
+
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         return parser
-        
+
+    def _reset_parameters(self) -> None:
+        """Khởi tạo các Conv2d pointwise (1x1) trong UpsampleHead với he_uniform."""
+        for stage in self.layers:
+            # Mỗi stage có Sequential[0] chứa Conv2d 1x1 + UpsampleBlock
+            sequential = stage[0]
+            if isinstance(sequential, Sequential):
+                for layer in sequential:
+                    if isinstance(layer, Conv2d):
+                        self.initializer(layer.weight)
+                        if getattr(layer, "bias", None) is not None:
+                            zeros_(layer.bias)
+
     def forward(self, input: Tensor, outputs_stem: Tuple[Tensor, ...]) -> Tensor:
         assert (
             len(outputs_stem) == len(self.layers) - 1
@@ -334,6 +351,10 @@ class ContextAwareSegHead(BaseLayer):
         factory_kwargs = {"device": device, "dtype": dtype}
         self.initializer = _get_initializer(self.init_str)
         
+        # [ĐÃ SỬA] Chỉ truyền các tham số UpsampleHead thực sự cần.
+        # UpsampleHead không dùng expansion_factor, patch_size, num_transformer_block —
+        # trước đây **kwargs vô tình truyền chúng qua, gây inconsistency với
+        # MultiTaskDenseHead (vốn không truyền **kwargs).
         self.upsample_module = UpsampleHead(
             opts=self.opts,
             d_model=self.d_model,
@@ -341,7 +362,6 @@ class ContextAwareSegHead(BaseLayer):
             norm_num_groups=self.norm_num_groups,
             bias=self.bias,
             initializer=self.init_str,
-            **kwargs,
             **factory_kwargs
         )
         

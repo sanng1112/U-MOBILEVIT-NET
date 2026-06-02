@@ -330,14 +330,37 @@ class _UMobileViTLayer(BaseLayer):
                     if getattr(layer, "bias", None) is not None:
                         zeros_(layer.bias)
 
-    # ── Gradient Checkpointing helpers (chống OOM trên GPU nhỏ) ──
+    def _local_forward(self, input: Tensor) -> Tensor:
+        """Forward local block trong float32 khi trên CUDA.
+
+        [ĐÃ SỬA - Cách C] local_block gồm depthwise 3x3 + pointwise 1x1 +
+        ReLU + GroupNorm. Conv2d backward trong float16 tích luỹ trên toàn bộ
+        không gian (H*W = 102,400 pixels) → dễ overflow > 65504 → NaN gradient.
+        Ép local_block chạy float32 giống như attention và expansion block.
+        """
+        if input.device.type == 'cuda':
+            return self.local_block(input.float()).to(input.dtype)
+        return self.local_block(input)
 
     def _global_forward(self, Z: Tensor, *extra_args: Tensor) -> Tensor:
         """Forward global block — tách riêng để `torch.utils.checkpoint` có thể recompute.
 
         Khi wrapped với checkpoint(): intermediate activations của transformer blocks
         KHÔNG được lưu → backward sẽ tính lại từ đầu → tiết kiệm 30-40% VRAM.
+
+        [ĐÃ SỬA - Cách C] Ép global block chạy float32 trên CUDA để tránh NaN
+        gradient khi checkpoint recompute trong backward (lúc đó autocast đã tắt).
         """
+        if Z.device.type == 'cuda':
+            Z_fp32 = Z.float()
+            extra_fp32 = tuple(a.float() if a is not None else None for a in extra_args)
+            for block in self.global_block:
+                if extra_fp32 and extra_fp32[0] is not None:
+                    Z_fp32 = block(Z_fp32, *extra_fp32)
+                else:
+                    Z_fp32 = block(Z_fp32)
+            return Z_fp32.to(Z.dtype)
+
         for block in self.global_block:
             if extra_args and extra_args[0] is not None:
                 Z = block(Z, *extra_args)
@@ -351,5 +374,12 @@ class _UMobileViTLayer(BaseLayer):
         Đây là phần nặng nhất: expansion_factor=4.0 tạo tensor (B, C*4, H, W)
         → ~1.6 GB cho promax ở độ phân giải 160×160. Checkpointing giúp
         không phải lưu activations khổng lồ này.
+
+        [ĐÃ SỬA - Cách C] Luôn ép expansion block chạy float32 trên CUDA.
+        KHÔNG kiểm tra torch.is_autocast_enabled() vì trong backward pass
+        checkpoint gọi lại hàm này nhưng autocast đã tắt → nếu dùng float16
+        cho recompute sẽ gây NaN gradient do mất precision ở kênh mở rộng.
         """
+        if Z.device.type == 'cuda':
+            return self.expansion_block(Z.float()).to(Z.dtype)
         return self.expansion_block(Z)
