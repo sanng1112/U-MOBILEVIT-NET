@@ -219,11 +219,11 @@ __marimo__/
 
 
 demo/
-COCO/
-5000_tea_leaf_with_blackbg_geotagged/
-teaLeafBD/
-extracted_leaf_objects/
-coco_leaf/
+data/COCO/
+data/5000_tea_leaf_with_blackbg_geotagged/
+data/teaLeafBD/
+data/extracted_leaf_objects/
+data/coco_leaf/
 
 
 .claude
@@ -233,3 +233,11 @@ coco_leaf/
 *.pt
 *.onnx
 *.zip
+AGENTS.md
+.codegraph
+data/camvid/
+data/cityscapes
+data/drive
+data/isic2018
+data/kvasir_seg
+data/pascal_voc
