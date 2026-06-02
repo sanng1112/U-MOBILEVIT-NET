@@ -21,6 +21,7 @@ from models.u_mobilevit_net.decoder_block import (
     UMobileViTDecoderConcatLayer,
     _get_upsample_block
 )
+from models.u_mobilevit_net.module import get_groupnorm_groups
 
 # -----------------------------------------------------------------------------
 # 1. UPSAMPLE HEAD (Mô-đun phục hồi độ phân giải)

@@ -1,7 +1,8 @@
 import argparse
+import math
 from typing import (
-    Tuple, 
-    Callable, 
+    Tuple,
+    Callable,
     Any,
     List,
     Union,
@@ -11,13 +12,63 @@ from typing import (
 
 import torch
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from torch.nn import (
     ModuleList,
     Sequential,
     ReLU,
+    ReLU6,
     GroupNorm,
     Identity
 )
+
+
+# ═══════════════════════════════════════════════════════════════
+# GroupNorm Helper — tự động chọn num_groups tương thích
+# ═══════════════════════════════════════════════════════════════
+
+def get_groupnorm_groups(num_channels: int, target_groups: int = 4) -> int:
+    """Tìm num_groups tương thích nhất với GroupNorm.
+
+    GroupNorm yêu cầu num_channels % num_groups == 0.
+    Khi scale model (nano/pro/promax), channel count có thể không
+    chia hết cho target_groups — hàm này tự động chọn ước số
+    phù hợp nhất.
+
+    Args:
+        num_channels: Số channels hiện tại
+        target_groups: Số groups mong muốn (mặc định: 4)
+
+    Returns:
+        Số groups hợp lệ, được chọn theo thứ tự ưu tiên:
+        1. target_groups nếu num_channels % target_groups == 0
+        2. Ước số lớn nhất của num_channels mà ≤ target_groups
+        3. Ước số nhỏ nhất của num_channels mà ≥ target_groups
+        4. 1 (fallback)
+    """
+    if num_channels % target_groups == 0:
+        return target_groups
+
+    # Tìm tất cả ước số của num_channels
+    divisors = set()
+    for i in range(1, int(math.sqrt(num_channels)) + 1):
+        if num_channels % i == 0:
+            divisors.add(i)
+            divisors.add(num_channels // i)
+
+    divisors = sorted(divisors)
+
+    # Ưu tiên ước số lớn nhất ≤ target_groups
+    smaller = [d for d in divisors if d <= target_groups]
+    if smaller:
+        return max(smaller)
+
+    # Fallback: ước số nhỏ nhất ≥ target_groups
+    larger = [d for d in divisors if d >= target_groups]
+    if larger:
+        return min(larger)
+
+    return 1
 from torch.nn.modules.utils import _pair
 from torch.nn.init import zeros_
 
@@ -45,12 +96,13 @@ def _get_clones(
 
 def _get_local_block(
     opts: Optional[Any],
-    in_channels: int, 
+    in_channels: int,
     norm_num_groups: int = 1,
     bias: bool = True,
     **factory_kwargs
 ) -> Sequential:
     """Tạo Local Block với Convolution."""
+    effective_groups = get_groupnorm_groups(in_channels, norm_num_groups)
     block = Sequential(
         Conv2d(
             opts=opts,
@@ -66,13 +118,13 @@ def _get_local_block(
             opts=opts,
             in_channels=in_channels,
             out_channels=in_channels,
-            kernel_size=1, 
+            kernel_size=1,
             padding=0,
             bias=bias,
         ),
         ReLU(inplace=True),
         GroupNorm(
-            num_groups=norm_num_groups,
+            num_groups=effective_groups,
             num_channels=in_channels,
             **factory_kwargs
         )
@@ -82,16 +134,28 @@ def _get_local_block(
 
 def _get_expansion_block(
     opts: Optional[Any],
-    in_channels: int, 
+    in_channels: int,
     expansion_factor: float,
     dropout_p: float,
     bias: bool = True,
+    norm_num_groups: int = 4,
     **factory_kwargs
 ) -> Sequential:
-    """Tạo khối mở rộng Inverted Bottleneck (MobileNetV2 style)."""
+    """Tạo khối mở rộng Inverted Bottleneck (MobileNetV2 style).
+
+    [FIX NaN] Không có normalization + ReLU không giới hạn = activation
+    có thể tăng không kiểm soát → Inf trong attention → NaN gradient.
+
+    Fix: thêm GroupNorm sau mỗi conv (giống MobileNetV2 gốc dùng BN)
+    + dùng ReLU6 giới hạn activation trong [0, 6].
+    """
     expanded_channels = int(expansion_factor * in_channels)
+    gn1 = get_groupnorm_groups(expanded_channels, norm_num_groups)
+    gn2 = get_groupnorm_groups(expanded_channels, norm_num_groups)
+    gn3 = get_groupnorm_groups(in_channels, norm_num_groups)
+
     block = Sequential(
-        # Pointwise
+        # Pointwise expand
         Conv2d(
             opts=opts,
             in_channels=in_channels,
@@ -101,8 +165,9 @@ def _get_expansion_block(
             padding=0,
             bias=bias,
         ),
-        ReLU(inplace=True),
-        
+        GroupNorm(num_groups=gn1, num_channels=expanded_channels, **factory_kwargs),
+        ReLU6(inplace=True),
+
         # Depthwise
         Conv2d(
             opts=opts,
@@ -114,9 +179,10 @@ def _get_expansion_block(
             groups=expanded_channels,
             bias=bias,
         ),
-        ReLU(inplace=True),
-        
-        # Pointwise Projection
+        GroupNorm(num_groups=gn2, num_channels=expanded_channels, **factory_kwargs),
+        ReLU6(inplace=True),
+
+        # Pointwise Projection (linear — không activation, giống MobileNetV2)
         Conv2d(
             opts=opts,
             in_channels=expanded_channels,
@@ -126,6 +192,7 @@ def _get_expansion_block(
             padding=0,
             bias=bias,
         ),
+        GroupNorm(num_groups=gn3, num_channels=in_channels, **factory_kwargs),
         Dropout(opts=opts, p=dropout_p)
     )
     return block
@@ -161,7 +228,7 @@ class _UMobileViTLayer(BaseLayer):
         self.expansion_factor = get_param(opts, expansion_factor, "expansion_factor", 3.0)
         self.patch_size = get_param(opts, patch_size, "patch_size", 2)
         self.dropout_p = get_param(opts, dropout_p, "dropout_p", 0.1)
-        self.norm_num_groups = get_param(opts, norm_num_groups, "norm_num_groups", 1)
+        self.norm_num_groups = get_param(opts, norm_num_groups, "norm_num_groups", 4)
         self.bias = get_param(opts, bias, "bias", True)
         self.num_transformer_block = get_param(opts, num_transformer_block, "num_transformer_blocks", 1)
         self.init_str = get_param(opts, initializer, "initializer", "he_uniform")
@@ -180,13 +247,17 @@ class _UMobileViTLayer(BaseLayer):
         
         # global block made of transformer blocks
         if transformer_block is not None:
+            # Auto-compute compatible norm groups for transformer
+            effective_gn = get_groupnorm_groups(
+                self.in_channels, self.norm_num_groups
+            )
             transformer_block_kwargs = {
-                "in_channels": self.in_channels, 
+                "in_channels": self.in_channels,
                 "dropout_p": self.dropout_p,
-                "norm_num_groups": self.norm_num_groups,
+                "norm_num_groups": effective_gn,
                 "bias": self.bias,
                 "initializer": self.init_str,
-                "opts": opts 
+                "opts": opts
             }
             
             global_block = _get_clones(
@@ -213,6 +284,7 @@ class _UMobileViTLayer(BaseLayer):
                 expansion_factor=self.expansion_factor,
                 dropout_p=self.dropout_p,
                 bias=self.bias,
+                norm_num_groups=self.norm_num_groups,
                 **factory_kwargs
             )
         else:
@@ -220,14 +292,22 @@ class _UMobileViTLayer(BaseLayer):
             self.global_block = ModuleList([])
             self.expansion_block = Dropout(opts=opts, p=self.dropout_p)
                 
-        # out normalization
+        # out normalization — auto-select compatible num_groups
+        effective_out_groups = get_groupnorm_groups(
+            self.in_channels, self.norm_num_groups
+        )
         self.out_norm = GroupNorm(
-            num_groups=self.norm_num_groups,
+            num_groups=effective_out_groups,
             num_channels=self.in_channels,
             **factory_kwargs
         )
         
         self._reset_parameters()
+
+        # ── Gradient checkpointing flag ──
+        # Có thể bị ghi đè bởi SegmentationTrainer để tắt checkpointing
+        # khi model bất ổn định (NaN). Mặc định BẬT cho tiết kiệm VRAM.
+        self.use_checkpointing = True
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -242,10 +322,34 @@ class _UMobileViTLayer(BaseLayer):
                     self.initializer(layer.weight)
                     if getattr(layer, "bias", None) is not None:
                         zeros_(layer.bias)
-        
+
         if not isinstance(self.expansion_block, Dropout):
             for layer in self.expansion_block:
                 if isinstance(layer, Conv2d):
                     self.initializer(layer.weight)
                     if getattr(layer, "bias", None) is not None:
                         zeros_(layer.bias)
+
+    # ── Gradient Checkpointing helpers (chống OOM trên GPU nhỏ) ──
+
+    def _global_forward(self, Z: Tensor, *extra_args: Tensor) -> Tensor:
+        """Forward global block — tách riêng để `torch.utils.checkpoint` có thể recompute.
+
+        Khi wrapped với checkpoint(): intermediate activations của transformer blocks
+        KHÔNG được lưu → backward sẽ tính lại từ đầu → tiết kiệm 30-40% VRAM.
+        """
+        for block in self.global_block:
+            if extra_args and extra_args[0] is not None:
+                Z = block(Z, *extra_args)
+            else:
+                Z = block(Z)
+        return Z
+
+    def _expansion_forward(self, Z: Tensor) -> Tensor:
+        """Forward expansion block — tách riêng để checkpoint có thể recompute.
+
+        Đây là phần nặng nhất: expansion_factor=4.0 tạo tensor (B, C*4, H, W)
+        → ~1.6 GB cho promax ở độ phân giải 160×160. Checkpointing giúp
+        không phải lưu activations khổng lồ này.
+        """
+        return self.expansion_block(Z)

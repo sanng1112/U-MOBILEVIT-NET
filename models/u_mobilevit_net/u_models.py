@@ -1,6 +1,6 @@
 import argparse
 from typing import (
-    Tuple, 
+    Tuple,
     Callable,
     Optional,
     Union,
@@ -16,6 +16,7 @@ from cv_nets.utils.config_helper import get_param
 
 from models.u_mobilevit_net.encoder_block import UMobileViTEncoder
 from models.u_mobilevit_net.decoder_block import UMobileViTDecoder
+from models.u_mobilevit_net.configs import get_variant, UMOBILEVIT_VARIANTS
 
 # [ĐÃ SỬA]: Import đúng các class Head mới
 from models.u_mobilevit_net.seg_head import MultiTaskDenseHead, ContextAwareSegHead
@@ -29,10 +30,11 @@ class UMobileViT(BaseLayer):
         d_model: Optional[int] = None,
         expansion_factor: Optional[float] = None,
         alpha: Optional[float] = None,
+        variant: Optional[str] = None,
         patch_size: Optional[Union[int, Tuple[int, int]]] = None,
         dropout_p: Optional[float] = None,
         norm_num_groups: Optional[int] = None,
-        bias: Optional[bool] = None, 
+        bias: Optional[bool] = None,
         num_transformer_block: Optional[int] = None,
         initializer: Optional[Union[str, Callable[[Tensor], Tensor]]] = None,
         opts: Optional[Any] = None,
@@ -42,28 +44,54 @@ class UMobileViT(BaseLayer):
         **kwargs
     ) -> None:
         """
-        Initializer of UmobileViT model wrapper. 
+        Initializer of UmobileViT model wrapper.
+
+        Args:
+            variant: "nano" | "base" | "pro" | "promax" — preset model configuration.
+                     Overrides individual d_model, expansion_factor, etc. when set.
+            alpha: (deprecated) raw width multiplier — use variant instead.
         """
         super().__init__(*args, **kwargs)
-        
+
         self.opts = opts or kwargs.get("opts", None)
-        
+
+        # ── Variant Configuration ──
+        variant_name = variant or get_param(self.opts, None, "variant", "base")
+        if variant_name is not None:
+            var_cfg = get_variant(variant_name)
+        else:
+            var_cfg = {}
+
         self.in_channels = get_param(self.opts, in_channels, "in_channels", 3)
         self.out_channels = get_param(self.opts, out_channels, "out_channels", (2, 2))
-        self.base_d_model = get_param(self.opts, d_model, "d_model", 64)
-        self.expansion_factor = get_param(self.opts, expansion_factor, "expansion_factor", 3.0)
+
+        # Apply variant config (can be overridden by explicit args)
+        self.base_d_model = var_cfg.get("d_model", 64)
+        self.expansion_factor = get_param(
+            self.opts, expansion_factor,
+            "expansion_factor",
+            var_cfg.get("expansion_factor", 3.0)
+        )
         self.alpha = get_param(self.opts, alpha, "alpha", 1.0)
         self.patch_size = get_param(self.opts, patch_size, "patch_size", (2, 2))
         self.dropout_p = get_param(self.opts, dropout_p, "dropout_p", 0.1)
-        self.norm_num_groups = get_param(self.opts, norm_num_groups, "norm_num_groups", 4)
+        self.norm_num_groups = get_param(
+            self.opts, norm_num_groups,
+            "norm_num_groups",
+            var_cfg.get("target_groups", 4)
+        )
         self.bias = get_param(self.opts, bias, "bias", True)
-        self.num_transformer_block = get_param(self.opts, num_transformer_block, "num_transformer_blocks", 2)
+        self.num_transformer_block = get_param(
+            self.opts, num_transformer_block,
+            "num_transformer_blocks",
+            var_cfg.get("num_transformer_blocks", 2)
+        )
         self.init_str = get_param(self.opts, initializer, "initializer", "he_uniform")
-        
+
         assert self.alpha > 0, f"alpha must be greater than zero, got alpha={self.alpha}"
 
         scaled_d_model = int(self.alpha * self.base_d_model)
-        
+
         module_kwargs = {
             "opts": self.opts,
             "d_model": scaled_d_model,
@@ -71,28 +99,34 @@ class UMobileViT(BaseLayer):
             "patch_size": self.patch_size,
             "dropout_p": self.dropout_p,
             "norm_num_groups": self.norm_num_groups,
-            "bias": self.bias, 
+            "bias": self.bias,
             "num_transformer_block": self.num_transformer_block,
             "initializer": self.init_str,
             "device": device,
             "dtype": dtype
         }
-        
+
         self.encoder = UMobileViTEncoder(in_channels=self.in_channels, **module_kwargs)
         self.decoder = UMobileViTDecoder(**module_kwargs)
-        
+
         # [ĐÃ SỬA]: Mặc định khởi tạo mô hình đa nhiệm (Multi-task) thay vì fix cứng DrivableAndLane
         self.seg_head = MultiTaskDenseHead(
             out_channels=self.out_channels,
-            **module_kwargs 
+            **module_kwargs
         )
     
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         group = parser.add_argument_group(f"Arguments for {cls.__name__} (Model Wrapper)")
-        group.add_argument("--alpha", type=float, default=1.0, help="Hệ số kiểm soát độ rộng mạng (Width multiplier)")
-        group.add_argument("--head-type", type=str, default="dual", choices=["dual", "single"], help="Loại Segmentation Head (dual hoặc single)")
-        
+        group.add_argument("--variant", type=str, default="base",
+                          choices=["nano", "base", "pro", "promax"],
+                          help="Model variant: nano|base|pro|promax")
+        group.add_argument("--alpha", type=float, default=1.0,
+                          help="Hệ số kiểm soát độ rộng mạng (Width multiplier) — deprecated, use --variant")
+        group.add_argument("--head-type", type=str, default="dual",
+                          choices=["dual", "single"],
+                          help="Loại Segmentation Head (dual hoặc single)")
+
         parser = UMobileViTEncoder.add_arguments(parser)
         parser = UMobileViTDecoder.add_arguments(parser)
         return parser
@@ -110,6 +144,7 @@ class UMobileViT(BaseLayer):
 def umobilevit(
     opts: Optional[Any] = None,
     head: Optional[str] = None,
+    variant: Optional[str] = None,
     in_channels: Optional[int] = None,
     out_channels: Optional[Union[int, Tuple[int, ...], List[int]]] = None,
     d_model: Optional[int] = None,
@@ -118,7 +153,7 @@ def umobilevit(
     patch_size: Optional[Union[int, Tuple[int, int]]] = None,
     dropout_p: Optional[float] = None,
     norm_num_groups: Optional[int] = None,
-    bias: Optional[bool] = None, 
+    bias: Optional[bool] = None,
     num_transformer_block: Optional[int] = None,
     initializer: Optional[Union[str, Callable[[Tensor], Tensor]]] = None,
     device=None,
@@ -126,11 +161,17 @@ def umobilevit(
 ) -> UMobileViT:
     """
     Factory function để khởi tạo mạng UMobileViT.
+
+    Args:
+        variant: "nano" | "base" | "pro" | "promax" — preset configuration.
+        head: "single" hoặc "dual" (mặc định: "dual" từ opts).
     """
     head_type = head if head is not None else get_param(opts, None, "head_type", "dual")
-    
+    variant_name = variant or get_param(opts, None, "variant", "base")
+
     model = UMobileViT(
         opts=opts,
+        variant=variant_name,
         in_channels=in_channels,
         out_channels=out_channels,
         d_model=d_model,
@@ -145,14 +186,14 @@ def umobilevit(
         device=device,
         dtype=dtype
     )
-    
+
     # [ĐÃ SỬA]: Xử lý nếu người dùng muốn khởi tạo mạng tác vụ đơn lẻ (Single Task)
     if head_type != "dual":
         # Xử lý an toàn: Nếu out_channels đang là tuple (vd: (2, 4)) thì chỉ lấy class đầu tiên
         single_out_channels = model.out_channels
         if isinstance(single_out_channels, (tuple, list)):
             single_out_channels = single_out_channels[0]
-            
+
         head_kwargs = {
             "opts": opts,
             "out_channels": single_out_channels, # Dùng int cho ContextAwareSegHead
@@ -161,17 +202,57 @@ def umobilevit(
             "patch_size": model.patch_size,
             "dropout_p": model.dropout_p,
             "norm_num_groups": model.norm_num_groups,
-            "bias": model.bias, 
+            "bias": model.bias,
             "num_transformer_block": model.num_transformer_block,
             "initializer": model.init_str,
             "device": device,
             "dtype": dtype
         }
-        
+
         # Ghi đè seg_head thành loại tác vụ đơn (ContextAwareSegHead)
         model.seg_head = ContextAwareSegHead(**head_kwargs)
-    
+
     return model
+
+
+# ═══════════════════════════════════════════════════════════════
+# Convenience Factory Functions
+# ═══════════════════════════════════════════════════════════════
+
+def umobilevit_nano(
+    out_channels: Union[int, Tuple[int, ...], List[int]] = 1,
+    head: str = "single",
+    **kwargs
+) -> UMobileViT:
+    """U-MobileViT-Net Nano (~0.3M params) — siêu nhẹ cho edge devices."""
+    return umobilevit(variant="nano", head=head, out_channels=out_channels, **kwargs)
+
+
+def umobilevit_base(
+    out_channels: Union[int, Tuple[int, ...], List[int]] = 1,
+    head: str = "single",
+    **kwargs
+) -> UMobileViT:
+    """U-MobileViT-Net Base (~0.6M params) — cân bằng accuracy/speed."""
+    return umobilevit(variant="base", head=head, out_channels=out_channels, **kwargs)
+
+
+def umobilevit_pro(
+    out_channels: Union[int, Tuple[int, ...], List[int]] = 1,
+    head: str = "single",
+    **kwargs
+) -> UMobileViT:
+    """U-MobileViT-Net Pro (~2.0M params) — accuracy cao."""
+    return umobilevit(variant="pro", head=head, out_channels=out_channels, **kwargs)
+
+
+def umobilevit_promax(
+    out_channels: Union[int, Tuple[int, ...], List[int]] = 1,
+    head: str = "single",
+    **kwargs
+) -> UMobileViT:
+    """U-MobileViT-Net ProMax (~7.0M params) — maximum accuracy."""
+    return umobilevit(variant="promax", head=head, out_channels=out_channels, **kwargs)
 
 if __name__ == "__main__":
     formatter = lambda prog: argparse.HelpFormatter(prog, max_help_position=60, width=240)

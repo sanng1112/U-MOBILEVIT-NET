@@ -2,7 +2,9 @@ import argparse
 from typing import Optional, Tuple, Callable, Any, List
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from torch.nn import (
     ModuleList,
     Sequential,
@@ -24,7 +26,8 @@ from models.u_mobilevit_net.transfomer import (
 )
 from models.u_mobilevit_net.module import (
     _UMobileViTLayer,
-    _get_clones
+    _get_clones,
+    get_groupnorm_groups,
 )
 from cv_nets.utils.functional import (
     unfold_custom,
@@ -45,33 +48,55 @@ class UMobileViTDecoderLayer(_UMobileViTLayer):
         
     def forward(self, input: Tensor, memory: Tensor) -> Tensor:
         # check integrity: features sizes must be divisible by patch sizes respectively
-        assert input.dim() == 4, f"Decoder block expected input have 4 dimensions, got {input.dim()}." 
-        assert memory.dim() == 4, f"Decoder block expected memory have 4 dimensions, got {memory.dim()}." 
-        
+        assert input.dim() == 4, f"Decoder block expected input have 4 dimensions, got {input.dim()}."
+        assert memory.dim() == 4, f"Decoder block expected memory have 4 dimensions, got {memory.dim()}."
+
         N, C, *input_size = input.shape
         patch_h, patch_w = self.fold_params["kernel_size"]
-        
-        assert (
-            input_size[0] % patch_h == 0 and input_size[1] % patch_w == 0
-        ), f"Height and width of feature map must be divisible by patch sizes." 
-        
+
         # local block forward
         Z = self.local_block(input) # (N, C, H, W)
-        
+
+        # Align memory spatial size to match Z (encoder skip may differ from decoder upsample)
+        H, W = Z.shape[2], Z.shape[3]
+        if memory.shape[2] != H or memory.shape[3] != W:
+            memory = F.interpolate(memory, size=(H, W), mode='nearest')
+
+        # Pad spatial dims to be divisible by patch_size (fixes odd-size inputs)
+        pad_h = (patch_h - H % patch_h) % patch_h
+        pad_w = (patch_w - W % patch_w) % patch_w
+
+        if pad_h > 0 or pad_w > 0:
+            Z = F.pad(Z, (0, pad_w, 0, pad_h))
+            memory = F.pad(memory, (0, pad_w, 0, pad_h))
+
+        padded_size = (H + pad_h, W + pad_w)
+
         # global block forward
-        # unfolding        
+        # unfolding
         Z = unfold_custom(Z, kernel_size=self.fold_params["kernel_size"]) # (N, C, P, S)
         memory_unfolded = unfold_custom(memory, kernel_size=self.fold_params["kernel_size"]) # (N, C, P, S)
-        
-        for block in self.global_block: 
-            Z = block(Z, memory_unfolded)
-            
+
+        # ── Global block (cross-attention transformer) — checkpoint khi training ──
+        if self.training and self.use_checkpointing:
+            Z = torch_checkpoint(self._global_forward, Z, memory_unfolded, use_reentrant=False)
+        else:
+            for block in self.global_block:
+                Z = block(Z, memory_unfolded)
+
         # folding
-        Z = fold_custom(Z, output_size=input_size, kernel_size=self.fold_params["kernel_size"]) # (N, C, H, W)
-        
-        # expansion block forward
-        Z = self.expansion_block(Z)
-        
+        Z = fold_custom(Z, output_size=padded_size, kernel_size=self.fold_params["kernel_size"]) # (N, C, H, W)
+
+        # Crop back to original spatial size
+        if pad_h > 0 or pad_w > 0:
+            Z = Z[:, :, :H, :W]
+
+        # ── Expansion block — checkpoint khi training (nặng nhất) ──
+        if self.training and self.use_checkpointing:
+            Z = torch_checkpoint(self._expansion_forward, Z, use_reentrant=False)
+        else:
+            Z = self.expansion_block(Z)
+
         # return normalized residual connection
         return self.out_norm(Z + input)
 
@@ -133,24 +158,34 @@ class UMobileViTDecoderConcatLayer(_UMobileViTLayer):
                     zeros_(layer.bias)
     
     def forward(self, input: Tensor, memory: Tensor) -> Tensor:
-        assert input.dim() == 4, f"Decoder block expected input have 4 dimensions, got {input.dim()}." 
-        assert memory.dim() == 4, f"Decoder block expected memory have 4 dimensions, got {memory.dim()}." 
+        assert input.dim() == 4, f"Decoder block expected input have 4 dimensions, got {input.dim()}."
+        assert memory.dim() == 4, f"Decoder block expected memory have 4 dimensions, got {memory.dim()}."
         assert (
             input.size(1) == memory.size(1)
         ), f"Decoder concatenative block expected input and memory have the same channels, got {input.size(1)} and {memory.size(1)}"
-        
+
         # local block forward
         Z = self.local_block(input) # (N, C, H, W)
-        
+
         # global block forward (Additive memory projection)
-        Z = Z + self.memory_proj(memory)
-        Z = self.global_block(Z)    
-        
-        # expansion block forward
+        # Align memory spatial size to match Z (encoder skip may differ from decoder upsample)
+        H, W = Z.shape[2], Z.shape[3]
+        mem_proj = self.memory_proj(memory)
+        if mem_proj.shape[2] != H or mem_proj.shape[3] != W:
+            mem_proj = F.interpolate(mem_proj, size=(H, W), mode='nearest')
+
+        Z = Z + mem_proj
+
+        # KHÔNG checkpoint global_block ở đây — đây là Sequential Conv2d nhẹ
+        # (không phải transformer), checkpoint tiết kiệm <50MB VRAM nhưng
+        # ReLU(inplace=True) + use_reentrant=False → corrupt graph → NaN.
+        Z = self.global_block(Z)
+
+        # expansion block forward (Dropout — nhẹ, không cần checkpoint)
         Z = self.expansion_block(Z)
-        
+
         # return normalized residual connection
-        return self.out_norm(Z + input)    
+        return self.out_norm(Z + input)
 
 
 def _get_upsample_block(initializer, opts: Optional[Any] = None, **kwargs) -> Sequential:
