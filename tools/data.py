@@ -73,7 +73,7 @@ class ComposeAugmentation:
         image_size: Target (height, width) for center crop.
         is_train: If True, apply random augmentations; otherwise resize + center crop only.
         ignore_index: Pixel value to use as fill for mask padding / rotation borders.
-        aug_intensity: One of 'light', 'medium', 'strong'.
+        aug_intensity: One of 'very_light', 'minimal', 'light', 'medium', 'strong'.
     """
 
     def __init__(
@@ -94,8 +94,8 @@ class ComposeAugmentation:
         # -- resize so the short edge is at least crop_min -----------------
         target_min = min(self.image_size)
         if self.is_train:
-            scale_min = {"light": 1.0, "medium": 1.0, "strong": 0.9}[self.aug_intensity]
-            scale_max = {"light": 1.3, "medium": 1.6, "strong": 2.0}[self.aug_intensity]
+            scale_min = {"very_light": 1.0, "minimal": 1.0, "light": 1.0, "medium": 1.0, "strong": 0.9}[self.aug_intensity]
+            scale_max = {"very_light": 1.05, "minimal": 1.1, "light": 1.3, "medium": 1.6, "strong": 2.0}[self.aug_intensity]
             short_edge = random.randint(
                 int(target_min * scale_min), int(target_min * scale_max)
             )
@@ -113,7 +113,7 @@ class ComposeAugmentation:
         else:
             # -- random rotation -------------------------------------------
             if random.random() > 0.5:
-                angle_lim = {"light": 10, "medium": 20, "strong": 45}[self.aug_intensity]
+                angle_lim = {"very_light": 3, "minimal": 5, "light": 10, "medium": 20, "strong": 45}[self.aug_intensity]
                 angle = random.uniform(-angle_lim, angle_lim)
                 image = TF.rotate(image, angle, interpolation=InterpolationMode.BILINEAR, fill=0)
                 mask = TF.rotate(mask, angle, interpolation=InterpolationMode.NEAREST,
@@ -124,40 +124,44 @@ class ComposeAugmentation:
             image = TF.crop(image, i, j, h, w)
             mask = TF.crop(mask, i, j, h, w)
 
-            # -- horizontal flip -------------------------------------------
-            if random.random() > 0.5:
-                image = TF.hflip(image)
-                mask = TF.hflip(mask)
+            # # -- horizontal flip -------------------------------------------
+            # if random.random() > 0.5:
+            #     image = TF.hflip(image)
+            #     mask = TF.hflip(mask)
 
-            # -- vertical flip (strong only) -------------------------------
-            if self.aug_intensity == "strong" and random.random() > 0.7:
-                image = TF.vflip(image)
-                mask = TF.vflip(mask)
+            # # -- vertical flip (strong only) -------------------------------
+            # if self.aug_intensity == "strong" and random.random() > 0.7:
+            #     image = TF.vflip(image)
+            #     mask = TF.vflip(mask)
 
-            # -- colour jitter (image only) --------------------------------
-            if random.random() > 0.3:
-                brightness = {"light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-                contrast = {"light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-                saturation = {"light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-                hue = {"light": 0.05, "medium": 0.1, "strong": 0.15}[self.aug_intensity]
-                image = transforms.ColorJitter(
-                    brightness=brightness, contrast=contrast,
-                    saturation=saturation, hue=hue,
-                )(image)
+            # # -- colour jitter (image only) --------------------------------
+            # #   very_light: completely disabled — colour is critical for
+            # #   agricultural disease identification
+            # if self.aug_intensity != "very_light" and random.random() > 0.3:
+            #     brightness = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+            #     contrast = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+            #     saturation = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+            #     hue = {"very_light": 0.0, "minimal": 0.02, "light": 0.05, "medium": 0.1, "strong": 0.15}[self.aug_intensity]
+            #     image = transforms.ColorJitter(
+            #         brightness=brightness, contrast=contrast,
+            #         saturation=saturation, hue=hue,
+            #     )(image)
 
-            # -- Gaussian blur (image only) --------------------------------
-            if random.random() > 0.7:
-                sigma = {"light": (0.1, 1.0), "medium": (0.1, 2.0), "strong": (0.1, 3.0)}[
-                    self.aug_intensity
-                ]
-                image = transforms.GaussianBlur(
-                    kernel_size=int(random.choice([3, 5])), sigma=sigma,
-                )(image)
+            # # -- Gaussian blur (image only) --------------------------------
+            # #   very_light: completely disabled — blur destroys fine lesion
+            # #   texture needed for disease classification
+            # if self.aug_intensity != "very_light" and random.random() > 0.7:
+            #     sigma = {"very_light": (0.1, 0.1), "minimal": (0.1, 0.5), "light": (0.1, 1.0), "medium": (0.1, 2.0), "strong": (0.1, 3.0)}[
+            #         self.aug_intensity
+            #     ]
+            #     image = transforms.GaussianBlur(
+            #         kernel_size=int(random.choice([3, 5])), sigma=sigma,
+            #     )(image)
 
-            # -- random gamma (strong only) --------------------------------
-            if self.aug_intensity == "strong" and random.random() > 0.7:
-                gamma = random.uniform(0.7, 1.3)
-                image = TF.adjust_gamma(image, gamma)
+            # # -- random gamma (strong only) --------------------------------
+            # if self.aug_intensity == "strong" and random.random() > 0.7:
+            #     gamma = random.uniform(0.7, 1.3)
+            #     image = TF.adjust_gamma(image, gamma)
 
         # -- to tensor ----------------------------------------------------
         image_tensor = TF.to_tensor(image)
@@ -703,7 +707,7 @@ def create_dataloaders(
     image_size: Tuple[int, int] = (320, 320),
     batch_size: int = 16,
     num_workers: int = 4,
-    aug_intensity: str = "medium",
+    aug_intensity: str = "strong",
     data_root: Optional[str] = None,
     pin_memory: bool = True,
 ) -> Tuple[DataLoader, DataLoader, DatasetInfo]:
@@ -802,7 +806,18 @@ def denormalize(
     mean: Tuple[float, ...] = (0.485, 0.456, 0.406),
     std: Tuple[float, ...] = (0.229, 0.224, 0.225),
 ) -> np.ndarray:
-    """Reverse ImageNet normalisation for display."""
+    """Convert a tensor to a numpy image for display.
+
+    If the tensor has already been ImageNet-normalised (values outside
+    [0, 1]), the normalisation is reversed.  Otherwise the tensor is
+    assumed to be in [0, 1] range and returned as-is.
+    """
+    t_min, t_max = tensor.min().item(), tensor.max().item()
+    if t_min >= -0.05 and t_max <= 1.05:
+        # Already in displayable range — no normalisation to reverse
+        return tensor.permute(1, 2, 0).numpy()
+
+    # Reverse ImageNet normalisation
     inv_mean = [-m / s for m, s in zip(mean, std)]
     inv_std = [1.0 / s for s in std]
     tensor = tensor.clone()

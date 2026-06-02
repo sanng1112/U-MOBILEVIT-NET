@@ -251,57 +251,124 @@ def plot_training_curves(
 ) -> None:
     """Plot loss and metric curves from a training history dict.
 
-    Produces a 2 × 2 grid: combined loss, CE/BCE loss, Dice loss, and
-    validation metric with overlaid learning rate.
+    Produces **4 separate figures**, each displayed individually:
+    1. Combined Loss (train + val) with best-val annotation
+    2. Cross-Entropy / BCE Loss (train + val)
+    3. Dice Loss (train + val)
+    4. Validation metric with overlaid learning rate and best-metric annotation
+
+    If *save_path* is provided, it is used as a stem and ``_1`` … ``_4``
+    suffixes are appended (e.g. ``curves_1.pdf``).
     """
     epochs = range(1, len(history["train_loss"]) + 1)
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    train_color = TOL_PALETTE[0]      # blue
+    val_color = TOL_PALETTE[3]        # red
+    lr_color = TOL_PALETTE[5]         # cyan
 
-    # Combined loss
-    axes[0, 0].plot(epochs, history["train_loss"], label="Train", lw=2)
-    axes[0, 0].plot(epochs, history["val_loss"], label="Validation", lw=2)
-    axes[0, 0].set_title("Combined Loss")
-    axes[0, 0].set_xlabel("Epoch")
-    axes[0, 0].set_ylabel("Loss")
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, ls="--", alpha=0.7)
+    def _maybe_save(fig, suffix: str) -> None:
+        if save_path:
+            stem = Path(save_path)
+            out = stem.parent / f"{stem.stem}_{suffix}{stem.suffix}"
+            fig.savefig(str(out))
+        fig.show()
 
-    # CE / BCE
-    axes[0, 1].plot(epochs, history["train_ce"], label="Train", lw=2)
-    axes[0, 1].plot(epochs, history["val_ce"], label="Validation", lw=2)
-    axes[0, 1].set_title("Cross-Entropy / BCE Loss")
-    axes[0, 1].set_xlabel("Epoch")
-    axes[0, 1].set_ylabel("Loss")
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, ls="--", alpha=0.7)
+    # ---- Figure 1: Combined Loss -----------------------------------------
+    fig1, ax1 = plt.subplots(figsize=(11, 6))
+    ax1.plot(epochs, history["train_loss"], color=train_color, label="Train", lw=2.5)
+    ax1.plot(epochs, history["val_loss"], color=val_color, label="Validation", lw=2.5)
+    # Annotate best validation loss
+    best_val_idx = int(np.argmin(history["val_loss"]))
+    best_val_loss = history["val_loss"][best_val_idx]
+    ax1.annotate(
+        f"Best: {best_val_loss:.4f}",
+        xy=(best_val_idx + 1, best_val_loss),
+        xytext=(best_val_idx + 1 + len(epochs) * 0.08, best_val_loss * 1.15),
+        arrowprops=dict(arrowstyle="->", color=val_color, lw=1.5),
+        fontsize=10, color=val_color, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=val_color, alpha=0.8),
+    )
+    ax1.set_title("Combined Loss (CE + Dice)", fontsize=14, fontweight="bold")
+    ax1.set_xlabel("Epoch", fontsize=12)
+    ax1.set_ylabel("Loss", fontsize=12)
+    ax1.legend(fontsize=11, loc="upper right")
+    ax1.grid(True, ls="--", alpha=0.6)
+    fig1.tight_layout()
+    _maybe_save(fig1, "1")
 
-    # Dice
-    axes[1, 0].plot(epochs, history["train_dice"], label="Train", lw=2)
-    axes[1, 0].plot(epochs, history["val_dice"], label="Validation", lw=2)
-    axes[1, 0].set_title("Dice Loss")
-    axes[1, 0].set_xlabel("Epoch")
-    axes[1, 0].set_ylabel("Loss")
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, ls="--", alpha=0.7)
+    # ---- Figure 2: Cross-Entropy / BCE Loss ------------------------------
+    fig2, ax2 = plt.subplots(figsize=(11, 6))
+    ax2.plot(epochs, history["train_ce"], color=train_color, label="Train", lw=2.5)
+    ax2.plot(epochs, history["val_ce"], color=val_color, label="Validation", lw=2.5)
+    best_val_ce = min(history["val_ce"])
+    best_val_ce_idx = int(np.argmin(history["val_ce"]))
+    ax2.annotate(
+        f"Best: {best_val_ce:.4f}",
+        xy=(best_val_ce_idx + 1, best_val_ce),
+        xytext=(best_val_ce_idx + 1 + len(epochs) * 0.08, best_val_ce * 1.2),
+        arrowprops=dict(arrowstyle="->", color=val_color, lw=1.5),
+        fontsize=10, color=val_color, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=val_color, alpha=0.8),
+    )
+    ax2.set_title("Cross-Entropy / BCE Loss", fontsize=14, fontweight="bold")
+    ax2.set_xlabel("Epoch", fontsize=12)
+    ax2.set_ylabel("Loss", fontsize=12)
+    ax2.legend(fontsize=11, loc="upper right")
+    ax2.grid(True, ls="--", alpha=0.6)
+    fig2.tight_layout()
+    _maybe_save(fig2, "2")
 
-    # Validation metric
-    axes[1, 1].plot(epochs, history["val_metric"], color=TOL_PALETTE[1], label=metric_name, lw=2)
-    axes[1, 1].set_title(f"Validation {metric_name}")
-    axes[1, 1].set_xlabel("Epoch")
-    axes[1, 1].set_ylabel(metric_name)
-    axes[1, 1].legend(loc="upper left")
-    axes[1, 1].grid(True, ls="--", alpha=0.7)
+    # ---- Figure 3: Dice Loss ---------------------------------------------
+    fig3, ax3 = plt.subplots(figsize=(11, 6))
+    ax3.plot(epochs, history["train_dice"], color=train_color, label="Train", lw=2.5)
+    ax3.plot(epochs, history["val_dice"], color=val_color, label="Validation", lw=2.5)
+    best_val_dice = min(history["val_dice"])
+    best_val_dice_idx = int(np.argmin(history["val_dice"]))
+    ax3.annotate(
+        f"Best: {best_val_dice:.4f}",
+        xy=(best_val_dice_idx + 1, best_val_dice),
+        xytext=(best_val_dice_idx + 1 + len(epochs) * 0.08, best_val_dice * 1.2),
+        arrowprops=dict(arrowstyle="->", color=val_color, lw=1.5),
+        fontsize=10, color=val_color, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=val_color, alpha=0.8),
+    )
+    ax3.set_title("Dice Loss", fontsize=14, fontweight="bold")
+    ax3.set_xlabel("Epoch", fontsize=12)
+    ax3.set_ylabel("Loss", fontsize=12)
+    ax3.legend(fontsize=11, loc="upper right")
+    ax3.grid(True, ls="--", alpha=0.6)
+    fig3.tight_layout()
+    _maybe_save(fig3, "3")
+
+    # ---- Figure 4: Validation Metric + LR --------------------------------
+    fig4, ax4 = plt.subplots(figsize=(11, 6))
+    ax4.plot(epochs, history["val_metric"], color=TOL_PALETTE[1], label=metric_name, lw=2.5)
+    best_metric_idx = int(np.argmax(history["val_metric"]))
+    best_metric = history["val_metric"][best_metric_idx]
+    ax4.annotate(
+        f"Best {metric_name}: {best_metric:.4f}\n(Epoch {best_metric_idx + 1})",
+        xy=(best_metric_idx + 1, best_metric),
+        xytext=(best_metric_idx + 1 - len(epochs) * 0.12, best_metric * 0.92),
+        arrowprops=dict(arrowstyle="->", color=TOL_PALETTE[1], lw=1.5),
+        fontsize=10, color=TOL_PALETTE[1], fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=TOL_PALETTE[1], alpha=0.9),
+    )
+    ax4.set_title(f"Validation {metric_name}", fontsize=14, fontweight="bold")
+    ax4.set_xlabel("Epoch", fontsize=12)
+    ax4.set_ylabel(metric_name, fontsize=12, color=TOL_PALETTE[1])
+    ax4.tick_params(axis="y", labelcolor=TOL_PALETTE[1])
+    ax4.legend([metric_name], loc="upper left", fontsize=11)
+    ax4.grid(True, ls="--", alpha=0.6)
 
     if history.get("lr"):
-        ax_lr = axes[1, 1].twinx()
-        ax_lr.plot(epochs, history["lr"], color=TOL_PALETTE[5], ls="--", lw=1, alpha=0.5)
-        ax_lr.set_ylabel("Learning Rate")
-        ax_lr.legend(["LR"], loc="lower right")
+        ax_lr = ax4.twinx()
+        ax_lr.plot(epochs, history["lr"], color=lr_color, ls="--", lw=1.5, alpha=0.6)
+        ax_lr.set_ylabel("Learning Rate", fontsize=12, color=lr_color)
+        ax_lr.tick_params(axis="y", labelcolor=lr_color)
+        ax_lr.set_yscale("log")
+        ax_lr.legend(["LR"], loc="lower right", fontsize=10)
 
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path)
-    plt.show()
+    fig4.tight_layout()
+    _maybe_save(fig4, "4")
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +460,11 @@ def plot_confusion_matrix(
     class_names: List[str],
     save_path: Optional[str] = None,
 ) -> None:
-    """Plot raw and row-normalised confusion matrices side by side.
+    """Plot a single, publication-quality confusion matrix with bold numbers.
+
+    Produces one large matrix showing **both** raw counts and normalised
+    recall-percentage values in every cell.  Diagonal cells (correct
+    predictions) are clearly separated from off-diagonal errors.
 
     Args:
         cm: Raw count confusion matrix (C × C).
@@ -401,23 +472,82 @@ def plot_confusion_matrix(
         class_names: Class labels.
     """
     n = len(class_names)
-    fig, axes = plt.subplots(1, 2, figsize=(max(24, n * 1.5), max(10, n * 0.6)))
+    cell_size = max(1.4, min(2.2, 18.0 / max(n, 1)))
+    figsize = (n * cell_size + 2.5, n * cell_size + 1.8)
+    fig, ax = plt.subplots(figsize=figsize)
 
-    im0 = axes[0].imshow(cm, cmap="Blues", aspect="auto")
-    axes[0].set_title("Confusion Matrix (counts)")
-    axes[0].set_xticks(range(n))
-    axes[0].set_yticks(range(n))
-    axes[0].set_xticklabels(class_names, rotation=90, fontsize=7)
-    axes[0].set_yticklabels(class_names, fontsize=7)
-    plt.colorbar(im0, ax=axes[0], fraction=0.046)
+    ann_font_main = max(9, min(14, 110 / max(n, 1)))
+    ann_font_sub = max(6, min(10, 90 / max(n, 1)))
 
-    im1 = axes[1].imshow(cm_norm, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
-    axes[1].set_title("Normalised Confusion Matrix (Recall)")
-    axes[1].set_xticks(range(n))
-    axes[1].set_yticks(range(n))
-    axes[1].set_xticklabels(class_names, rotation=90, fontsize=7)
-    axes[1].set_yticklabels(class_names, fontsize=7)
-    plt.colorbar(im1, ax=axes[1], fraction=0.046)
+    # Clip to [0,1] for display
+    cm_norm_clipped = np.clip(cm_norm, 0, 1)
+    im = ax.imshow(cm_norm_clipped, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+
+    # Draw grid lines separating every cell
+    for i in range(n + 1):
+        ax.axhline(i - 0.5, color="white", lw=2.5)
+        ax.axvline(i - 0.5, color="white", lw=2.5)
+
+    # Diagonal emphasis — draw a subtle border around diagonal cells
+    for i in range(n):
+        rect = plt.Rectangle(
+            (i - 0.5, i - 0.5), 1, 1,
+            fill=False, edgecolor=TOL_PALETTE[7], lw=3, zorder=10,
+        )
+        ax.add_patch(rect)
+
+    # Annotate every cell with BOTH count and percentage
+    for i in range(n):
+        for j in range(n):
+            count_val = int(cm[i, j])
+            pct_val = cm_norm[i, j]
+
+            if i == j:
+                # Diagonal: correct predictions in bold
+                main_color = "white" if pct_val > 0.5 else "black"
+                sub_color = "white" if pct_val > 0.5 else "#444444"
+                weight = "bold"
+            else:
+                main_color = "white" if pct_val > 0.65 else "black"
+                sub_color = "white" if pct_val > 0.65 else "#555555"
+                weight = "normal"
+
+            # Main text: count (large, bold)
+            count_str = f"{count_val:,}" if count_val < 10000 else f"{count_val/1000:.0f}k"
+            ax.text(j, i - 0.15, count_str,
+                    ha="center", va="center",
+                    fontsize=ann_font_main, color=main_color,
+                    fontweight=weight)
+
+            # Sub text: percentage (smaller, below count)
+            ax.text(j, i + 0.2, f"{pct_val * 100:.1f}%",
+                    ha="center", va="center",
+                    fontsize=ann_font_sub, color=sub_color)
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(class_names, rotation=45 if n > 8 else 30,
+                       ha="right", fontsize=max(8, min(11, 60 / max(n, 1))))
+    ax.set_yticklabels(class_names, fontsize=max(8, min(11, 60 / max(n, 1))))
+
+    ax.set_xlabel("Predicted Label", fontsize=12, fontweight="bold")
+    ax.set_ylabel("True Label", fontsize=12, fontweight="bold")
+    ax.xaxis.set_label_position("top")
+    ax.xaxis.tick_top()
+
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Recall (row-normalised)", fontsize=10)
+    cbar.ax.tick_params(labelsize=8)
+
+    # Compute overall accuracy
+    accuracy = np.trace(cm) / max(cm.sum(), 1) * 100
+    title = (
+        f"Confusion Matrix — "
+        f"Accuracy: {accuracy:.1f}%  |  "
+        f"mIoU: {np.mean([cm_norm[i,i] / (2 - cm_norm[i,i] + 1e-8) for i in range(n)]):.3f}"
+    )
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=20)
 
     plt.tight_layout()
     if save_path:
