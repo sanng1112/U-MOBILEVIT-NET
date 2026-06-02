@@ -124,44 +124,43 @@ class ComposeAugmentation:
             image = TF.crop(image, i, j, h, w)
             mask = TF.crop(mask, i, j, h, w)
 
-            # # -- horizontal flip -------------------------------------------
-            # if random.random() > 0.5:
-            #     image = TF.hflip(image)
-            #     mask = TF.hflip(mask)
+            # -- horizontal flip -------------------------------------------
+            if random.random() > 0.5:
+                image = TF.hflip(image)
+                mask = TF.hflip(mask)
 
-            # # -- vertical flip (strong only) -------------------------------
-            # if self.aug_intensity == "strong" and random.random() > 0.7:
-            #     image = TF.vflip(image)
-            #     mask = TF.vflip(mask)
+            # -- vertical flip (strong only) -------------------------------
+            if self.aug_intensity == "strong" and random.random() > 0.7:
+                image = TF.vflip(image)
+                mask = TF.vflip(mask)
 
-            # # -- colour jitter (image only) --------------------------------
-            # #   very_light: completely disabled — colour is critical for
-            # #   agricultural disease identification
-            # if self.aug_intensity != "very_light" and random.random() > 0.3:
-            #     brightness = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-            #     contrast = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-            #     saturation = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
-            #     hue = {"very_light": 0.0, "minimal": 0.02, "light": 0.05, "medium": 0.1, "strong": 0.15}[self.aug_intensity]
-            #     image = transforms.ColorJitter(
-            #         brightness=brightness, contrast=contrast,
-            #         saturation=saturation, hue=hue,
-            #     )(image)
+            # -- colour jitter (image only) --------------------------------
+            #   very_light: completely disabled — colour is critical for
+            #   agricultural disease identification
+            if self.aug_intensity != "very_light" and random.random() > 0.3:
+                brightness = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+                contrast = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+                saturation = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
+                hue = {"very_light": 0.0, "minimal": 0.02, "light": 0.05, "medium": 0.1, "strong": 0.15}[self.aug_intensity]
+                image = transforms.ColorJitter(
+                    brightness=brightness, contrast=contrast
+                )(image)
 
-            # # -- Gaussian blur (image only) --------------------------------
-            # #   very_light: completely disabled — blur destroys fine lesion
-            # #   texture needed for disease classification
-            # if self.aug_intensity != "very_light" and random.random() > 0.7:
-            #     sigma = {"very_light": (0.1, 0.1), "minimal": (0.1, 0.5), "light": (0.1, 1.0), "medium": (0.1, 2.0), "strong": (0.1, 3.0)}[
-            #         self.aug_intensity
-            #     ]
-            #     image = transforms.GaussianBlur(
-            #         kernel_size=int(random.choice([3, 5])), sigma=sigma,
-            #     )(image)
+            # -- Gaussian blur (image only) --------------------------------
+            #   very_light: completely disabled — blur destroys fine lesion
+            #   texture needed for disease classification
+            if self.aug_intensity != "very_light" and random.random() > 0.7:
+                sigma = {"very_light": (0.1, 0.1), "minimal": (0.1, 0.5), "light": (0.1, 1.0), "medium": (0.1, 2.0), "strong": (0.1, 3.0)}[
+                    self.aug_intensity
+                ]
+                image = transforms.GaussianBlur(
+                    kernel_size=int(random.choice([3, 5])), sigma=sigma,
+                )(image)
 
-            # # -- random gamma (strong only) --------------------------------
-            # if self.aug_intensity == "strong" and random.random() > 0.7:
-            #     gamma = random.uniform(0.7, 1.3)
-            #     image = TF.adjust_gamma(image, gamma)
+            # -- random gamma (strong only) --------------------------------
+            if self.aug_intensity == "strong" and random.random() > 0.7:
+                gamma = random.uniform(0.7, 1.3)
+                image = TF.adjust_gamma(image, gamma)
 
         # -- to tensor ----------------------------------------------------
         image_tensor = TF.to_tensor(image)
