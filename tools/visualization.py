@@ -181,11 +181,7 @@ def show_predictions(
 
     for images, masks in dataloader:
         images_gpu = images.to(device)
-        with torch.autocast(
-            device_type=device.type, dtype=torch.float16,
-            enabled=(device.type == "cuda"),
-        ):
-            outputs = model(images_gpu)
+        outputs = model(images_gpu)  # [FP32] Không dùng autocast
         images, masks = images.cpu(), masks.cpu()
 
         for i in range(images.size(0)):

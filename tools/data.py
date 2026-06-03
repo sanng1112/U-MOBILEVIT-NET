@@ -143,7 +143,8 @@ class ComposeAugmentation:
                 saturation = {"very_light": 0.0, "minimal": 0.1, "light": 0.2, "medium": 0.3, "strong": 0.5}[self.aug_intensity]
                 hue = {"very_light": 0.0, "minimal": 0.02, "light": 0.05, "medium": 0.1, "strong": 0.15}[self.aug_intensity]
                 image = transforms.ColorJitter(
-                    brightness=brightness, contrast=contrast
+                    brightness=brightness, contrast=contrast,
+                    hue = hue, saturation = saturation
                 )(image)
 
             # -- Gaussian blur (image only) --------------------------------

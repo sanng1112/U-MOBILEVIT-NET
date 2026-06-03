@@ -69,10 +69,7 @@ class TrainingConfig:
     min_lr_ratio: float = 0.01
     use_ema: bool = True
     ema_decay: float = 0.999
-    use_amp: bool = True
-    amp_init_scale: float = 256.0  # [ĐÃ SỬA] Default 2^16=65536 quá cao → gradient
-                                   # bị nhân 65536× → overflow float16 Conv2D backward
-                                   # → NaN. 256 an toàn cho mọi variant + dataset.
+    use_amp: bool = False  # [FP32] Tắt AMP mặc định để tránh NaN từ float16 overflow
     grad_clip_norm: float = 1.0
     grad_accum_steps: int = 1
     label_smoothing: float = 0.0
@@ -535,10 +532,7 @@ class SegmentationTrainer:
             weight_decay=self.config.weight_decay,
         )
         self.scheduler: Optional[object] = None
-        self.scaler = torch.amp.GradScaler(
-            init_scale=self.config.amp_init_scale,
-            enabled=self.config.use_amp and device.type == "cuda",
-        )
+        # [FP32] Không dùng GradScaler — toàn bộ training chạy float32
 
         # EMA
         self.ema = (
@@ -602,34 +596,65 @@ class SegmentationTrainer:
         self.model.train()
         running_loss, running_ce, running_dice = 0.0, 0.0, 0.0
         skipped = 0
+        batches_processed = 0        # số batch thực sự đã qua vòng lặp
+        aborted_early = False        # True nếu epoch bị cắt do NaN liên tiếp
+        consecutive_nan = 0          # NaN liên tiếp → early abort epoch
+        max_consecutive_nan = 20     # ~5% batches trên dataset nhỏ như camvid (367)
         accum_counter = 0
         self.optimizer.zero_grad()
 
         bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]",
                    unit="batch", leave=False)
         for images, masks in bar:
+            batches_processed += 1
+            # ---------- NaN input ---------------------------------------------
             if self._has_nan(images, masks):
                 skipped += 1
                 continue
             images, masks = images.to(self.device), masks.to(self.device)
 
-            with torch.autocast(
-                device_type=self.device.type, dtype=torch.float16,
-                enabled=self.config.use_amp and self.device.type == "cuda",
-            ):
-                outputs = self.model(images)
+            # ---------- forward + NaN output (FP32) --------------------------
+            outputs = self.model(images)
 
             if self._has_nan(outputs):
                 skipped += 1
+                consecutive_nan += 1
+                # Xóa gradient tích lũy dở dang (nếu có) để tránh state bleed
+                if accum_counter > 0:
+                    self.optimizer.zero_grad()
+                    accum_counter = 0
+                # Nếu NaN liên tiếp quá nhiều → model đã hỏng, abort epoch
+                if consecutive_nan >= max_consecutive_nan:
+                    tqdm.write(
+                        f"[Train] {consecutive_nan} consecutive NaN forward "
+                        f"passes — model likely corrupted, aborting epoch"
+                    )
+                    aborted_early = True
+                    break
                 continue
+            consecutive_nan = 0  # reset khi gặp batch tốt
 
+            # ---------- loss NaN ----------------------------------------------
             loss, ce, dice = self.criterion(outputs, masks)
             if self._has_nan(loss):
                 skipped += 1
+                consecutive_nan += 1
+                if accum_counter > 0:
+                    self.optimizer.zero_grad()
+                    accum_counter = 0
+                if consecutive_nan >= max_consecutive_nan:
+                    tqdm.write(
+                        f"[Train] {consecutive_nan} consecutive NaN loss "
+                        f"batches — aborting epoch"
+                    )
+                    aborted_early = True
+                    break
                 continue
+            consecutive_nan = 0
 
+            # ---------- valid batch: backward (FP32) -------------------------
             loss = loss / self.config.grad_accum_steps
-            self.scaler.scale(loss).backward()
+            loss.backward()
             accum_counter += 1
             running_loss += loss.item() * self.config.grad_accum_steps
             running_ce += ce.item()
@@ -639,34 +664,30 @@ class SegmentationTrainer:
                 dice=f"{dice.item():.4f}",
             )
 
+            # ---------- optimizer step ---------------------------------------
             if accum_counter >= self.config.grad_accum_steps:
                 if self._grads_have_nan():
-                    # tqdm.write("[Train] NaN gradients — skipping accumulation cycle")
                     skipped += accum_counter
                     self.optimizer.zero_grad()
                     accum_counter = 0
                     continue
 
-                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.config.grad_clip_norm,
                 )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
                 self.optimizer.zero_grad()
                 accum_counter = 0
                 if self.ema is not None:
                     self.ema.update()
 
-        # Partial accumulation at end of epoch
+        # ---------- partial accumulation at end of epoch (FP32) --------------
         if accum_counter > 0:
             if not self._grads_have_nan():
-                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.config.grad_clip_norm,
                 )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
                 self.optimizer.zero_grad()
                 if self.ema is not None:
                     self.ema.update()
@@ -675,13 +696,23 @@ class SegmentationTrainer:
                 skipped += accum_counter
                 self.optimizer.zero_grad()
 
-        n = len(train_loader) - skipped
-        if skipped:
-            tqdm.write(f"[Train] Skipped {skipped}/{len(train_loader)} NaN batches")
-        if n == 0:
-            tqdm.write(f"[Train] ALL {len(train_loader)} batches skipped (NaN)")
+        # [NaN Fix] Nếu epoch bị cắt sớm do NaN liên tiếp → báo 0.0 để
+        # train() trigger NaN recovery ngay, thay vì chờ hết epoch.
+        if aborted_early:
+            tqdm.write(
+                f"[Train] Epoch aborted early after {batches_processed}/"
+                f"{len(train_loader)} batches — model corrupted, "
+                f"triggering NaN recovery"
+            )
             return 0.0, 0.0, 0.0
-        return running_loss / n, running_ce / n, running_dice / n
+
+        valid_batches = batches_processed - skipped
+        if skipped:
+            tqdm.write(f"[Train] Skipped {skipped}/{batches_processed} NaN batches")
+        if valid_batches == 0:
+            tqdm.write(f"[Train] ALL {batches_processed} batches skipped (NaN)")
+            return 0.0, 0.0, 0.0
+        return running_loss / valid_batches, running_ce / valid_batches, running_dice / valid_batches
 
     def _grads_have_nan(self) -> bool:
         for p in self.model.parameters():
@@ -725,11 +756,7 @@ class SegmentationTrainer:
                     continue
                 images, masks = images.to(self.device), masks.to(self.device)
 
-                with torch.autocast(
-                    device_type=self.device.type, dtype=torch.float16,
-                    enabled=self.config.use_amp and self.device.type == "cuda",
-                ):
-                    outputs = self.model(images)
+                outputs = self.model(images)  # [FP32] Không dùng autocast
 
                 if self._has_nan(outputs):
                     skipped += 1
@@ -773,6 +800,9 @@ class SegmentationTrainer:
         finally:
             if self.ema is not None and ema_applied:
                 self.ema.restore()
+                # [OOM Fix] Giải phóng backup + clear cache ngay sau validation
+                # để tránh phân mảnh tích lũy qua nhiều epoch (đặc biệt promax).
+                self._cleanup_memory(aggressive=True)
 
     # ------------------------------------------------------------------
     # Main training loop
@@ -827,7 +857,8 @@ class SegmentationTrainer:
                 self.scheduler.step()
 
             current_lr = self.optimizer.param_groups[0]["lr"]
-            self._cleanup_memory()
+            # [OOM Fix] Cleanup đầu epoch — giải phóng fragment từ epoch trước
+            self._cleanup_memory(aggressive=True)
 
             # -- Train -----------------------------------------------------
             train_loss, train_ce, train_dice = self.train_epoch(
@@ -869,7 +900,8 @@ class SegmentationTrainer:
                     )
                     break
 
-            self._cleanup_memory()
+            # [OOM Fix] Cleanup sau train, trước validation — giải phóng grad + activation
+            self._cleanup_memory(aggressive=True)
 
             # -- Validate --------------------------------------------------
             val_loss, val_ce, val_dice, val_metric = self.eval_epoch(
@@ -928,10 +960,9 @@ class SegmentationTrainer:
             torch.save(last_ckpt, os.path.join(self.save_dir, "last_model.pth"))
             del ckpt, last_ckpt
 
-            # Periodic GPU cleanup
-            cache_interval = 5 if epoch > 100 else 10
-            if (epoch + 1) % cache_interval == 0:
-                self._cleanup_memory(aggressive=(epoch > 150))
+            # [OOM Fix] Cleanup sau checkpoint save MỖI epoch — state_dict clone
+            # khi torch.save có thể để lại memory fragment lớn.
+            self._cleanup_memory(aggressive=True)
 
             # -- Early stopping --------------------------------------------
             if val_loss < self.best_val_loss:

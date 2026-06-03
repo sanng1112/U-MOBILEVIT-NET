@@ -25,7 +25,7 @@ Cách dùng:
 
     # Đầy đủ tham số
     python train.py --dataset voc --epochs 150 --batch-size 32 --lr 1e-3 \\
-                    --image-size 320 320 --class-weights --amp
+                    --image-size 320 320 --class-weights
 
     # DRIVE (binary)
     python train.py --dataset drive --epochs 100 --batch-size 16
@@ -38,8 +38,14 @@ Yêu cầu:
 import sys
 import os
 
-# [OOM Fix] Ngăn CUDA memory fragmentation — PyTorch khuyến nghị trong error message
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# [OOM Fix] Ngăn CUDA memory fragmentation — PyTorch khuyến nghị trong error message.
+# - expandable_segments: cho phép mở rộng segment thay vì fail khi không tìm được block liên tục
+# - max_split_size_mb: giới hạn split block lớn → giảm phân mảnh (quan trọng cho promax ~7M params)
+# - garbage_collection_threshold: trigger GC sớm hơn khi có nhiều block rác
+os.environ.setdefault(
+    'PYTORCH_CUDA_ALLOC_CONF',
+    'expandable_segments:True,max_split_size_mb:128,garbage_collection_threshold:0.6'
+)
 
 import argparse
 import json
@@ -160,8 +166,8 @@ Ví dụ:
                         help='EMA decay factor (mặc định: 0.999)')
 
     # ── Mixed Precision ──
-    parser.add_argument('--no-amp', action='store_true', default=False,
-                        help='Tắt Automatic Mixed Precision (AMP)')
+    parser.add_argument('--amp', action='store_true', default=False,
+                        help='Bật Automatic Mixed Precision (AMP) — TẮT mặc định để tránh NaN float16')
     parser.add_argument('--no-cudnn-benchmark', action='store_true', default=False,
                         help='Tắt cuDNN benchmark')
 
@@ -340,7 +346,7 @@ def main():
     print(f"  Class weights:{'Yes' if args.class_weights else 'No'}")
     print(f"  Label smooth: {args.label_smoothing if args.label_smoothing > 0 else 'No'}")
     print(f"  Grad Central: {'Yes' if args.grad_centralization else 'No'}")
-    print(f"  AMP:          {'No' if args.no_amp else 'Yes'}")
+    print(f"  AMP:          {'Yes' if args.amp else 'No (FP32)'}")
     print(f"  Augmentation: {args.aug_intensity}")
     print(f"  Seed:         {args.seed}")
     print(f"  Save dir:     {os.path.abspath(save_dir)}")
@@ -427,33 +433,34 @@ def main():
     # 4. Thiết lập Trainer
     # ═══════════════════════════════════════════════════════════════
     print("[4/5] Đang thiết lập trainer...")
+    config = TrainingConfig(
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        warmup_epochs=args.warmup_epochs,
+        scheduler_type=args.scheduler,
+        poly_power=args.poly_power,
+        use_ema=not args.no_ema,
+        ema_decay=args.ema_decay,
+        use_amp=args.amp,  # [FP32] Mặc định False — không dùng AMP
+        grad_clip_norm=args.grad_clip,
+        label_smoothing=args.label_smoothing,
+    )
     trainer = SegmentationTrainer(
         model=model,
         device=device,
         dataset_info=info,
         save_dir=save_dir,
-        grad_clip_norm=args.grad_clip,
-        use_amp=not args.no_amp,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        warmup_epochs=args.warmup_epochs,
+        config=config,
         class_weights=class_weights,
         pos_weight=pos_weight,
-        use_ema=not args.no_ema,
-        ema_decay=args.ema_decay,
-        scheduler_type=args.scheduler,
-        poly_power=args.poly_power,
-        use_label_smoothing=(args.label_smoothing > 0),
-        label_smoothing=args.label_smoothing,
-        use_grad_centralization=args.grad_centralization,
     )
 
     print(f"  Loss:      {trainer.criterion.__class__.__name__}")
     print(f"  Optimizer: AdamW (lr={args.lr}, wd={args.weight_decay})")
     print(f"  Scheduler: {args.scheduler.upper()} + Warmup ({args.warmup_epochs} epochs)")
-    print(f"  Grad Clip: {trainer.grad_clip_norm}")
+    print(f"  Grad Clip: {config.grad_clip_norm}")
     print(f"  EMA:       {'Yes' if not args.no_ema else 'No'}")
-    print(f"  AMP:       {trainer.use_amp}")
+    print(f"  AMP:       {'Yes' if args.amp else 'No (FP32)'}")
     print()
 
     # ═══════════════════════════════════════════════════════════════

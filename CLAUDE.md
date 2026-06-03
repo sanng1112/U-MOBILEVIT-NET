@@ -17,7 +17,7 @@ export PYTHONPATH=$PWD
 
 # Train a model
 python train.py --dataset camvid --variant base
-python train.py --dataset voc --epochs 150 --batch-size 16 --class-weights --amp
+python train.py --dataset voc --epochs 150 --batch-size 16 --class-weights
 python train.py --dataset drive --epochs 100 --batch-size 16 --variant nano
 
 # Run full benchmark
@@ -89,7 +89,7 @@ Uses argparse with dataset-specific defaults in `DATASET_DEFAULTS`. Components:
 - **Scheduler**: Linear warmup (5 epochs by default) + CosineAnnealingLR or PolyLR
 - **Loss**: Combined CE/BCE + Dice loss (50/50 split), with optional class weights (inverse frequency), label smoothing, and pos_weight for binary tasks
 - **EMA**: Exponential Moving Average of model weights for validation
-- **AMP**: Automatic mixed precision via `torch.cuda.amp`
+- **AMP**: Đã TẮT mặc định (FP32 toàn bộ). Có thể bật lại với `--amp` nếu cần tốc độ, nhưng FP32 được khuyến nghị để tránh NaN.
 - **Gradient checkpointing**: On by default, auto-disabled on NaN recovery
 - **NaN recovery**: If all batches are skipped due to NaN, reloads best checkpoint, reduces LR 10×, and disables checkpointing (up to 3 attempts)
 

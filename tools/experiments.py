@@ -141,7 +141,7 @@ def benchmark_inference_speed(
     model: nn.Module,
     input_size: Tuple[int, int] = (320, 320),
     device: str = "cuda",
-    precision: str = "fp16",
+    precision: str = "fp32",  # [FP32] Mặc định FP32 để tránh NaN
     batch_size: int = 1,
     warmup: int = 50,
     repeats: int = 200,

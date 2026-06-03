@@ -127,18 +127,15 @@ def separable_attention_forward(
         k = F.linear(k_x, k_proj_weight, k_b).permute(0, 3, 1, 2) 
         v = F.linear(v_x, v_proj_weight, v_b).permute(0, 3, 1, 2) 
 
-    # [FIX NaN] Tính softmax trong FP32 để tránh overflow khi dùng autocast FP16.
-    # Query q có shape (N, 1, spatial, seq_len) — giá trị không được scale bởi sqrt(d_k)
-    # nên dễ vượt ngưỡng exp(11) ≈ 59874 trong FP16, gây Inf → NaN.
+    # [FP32] Tính softmax trong FP32 để ổn định số học — query không được
+    # scale bởi sqrt(d_k) nên giá trị có thể lớn, dễ gây overflow.
     context_scores = F.softmax(q.float(), dim=-1).to(q.dtype)
     context_scores = F.dropout(context_scores, p=dropout_p, training=training)
 
     context_vector = k * context_scores
     context_vector = torch.sum(context_vector, dim=-1, keepdim=True)
 
-    # [FIX NaN] relu(v) * Inf = NaN (vì 0 * Inf = NaN trong IEEE 754).
-    # Đã được phòng ngừa bằng softmax FP32 bên trên, nhưng clamp context_vector
-    # để bảo vệ thêm một lớp an toàn.
+    # [FP32] Clamp context_vector để bảo vệ khỏi Inf (0 * Inf = NaN trong IEEE 754).
     context_vector = torch.clamp(context_vector, max=1e4)
     out = F.relu(v) * context_vector
 

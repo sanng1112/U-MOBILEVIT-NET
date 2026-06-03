@@ -331,15 +331,10 @@ class _UMobileViTLayer(BaseLayer):
                         zeros_(layer.bias)
 
     def _local_forward(self, input: Tensor) -> Tensor:
-        """Forward local block trong float32 khi trên CUDA.
+        """Forward local block (depthwise 3x3 + pointwise 1x1 + ReLU + GroupNorm).
 
-        [ĐÃ SỬA - Cách C] local_block gồm depthwise 3x3 + pointwise 1x1 +
-        ReLU + GroupNorm. Conv2d backward trong float16 tích luỹ trên toàn bộ
-        không gian (H*W = 102,400 pixels) → dễ overflow > 65504 → NaN gradient.
-        Ép local_block chạy float32 giống như attention và expansion block.
+        [FP32] Không cần ép float32 vì toàn bộ model chạy FP32.
         """
-        if input.device.type == 'cuda':
-            return self.local_block(input.float()).to(input.dtype)
         return self.local_block(input)
 
     def _global_forward(self, Z: Tensor, *extra_args: Tensor) -> Tensor:
@@ -348,19 +343,8 @@ class _UMobileViTLayer(BaseLayer):
         Khi wrapped với checkpoint(): intermediate activations của transformer blocks
         KHÔNG được lưu → backward sẽ tính lại từ đầu → tiết kiệm 30-40% VRAM.
 
-        [ĐÃ SỬA - Cách C] Ép global block chạy float32 trên CUDA để tránh NaN
-        gradient khi checkpoint recompute trong backward (lúc đó autocast đã tắt).
+        [FP32] Không cần ép float32 vì toàn bộ model chạy FP32.
         """
-        if Z.device.type == 'cuda':
-            Z_fp32 = Z.float()
-            extra_fp32 = tuple(a.float() if a is not None else None for a in extra_args)
-            for block in self.global_block:
-                if extra_fp32 and extra_fp32[0] is not None:
-                    Z_fp32 = block(Z_fp32, *extra_fp32)
-                else:
-                    Z_fp32 = block(Z_fp32)
-            return Z_fp32.to(Z.dtype)
-
         for block in self.global_block:
             if extra_args and extra_args[0] is not None:
                 Z = block(Z, *extra_args)
@@ -375,11 +359,6 @@ class _UMobileViTLayer(BaseLayer):
         → ~1.6 GB cho promax ở độ phân giải 160×160. Checkpointing giúp
         không phải lưu activations khổng lồ này.
 
-        [ĐÃ SỬA - Cách C] Luôn ép expansion block chạy float32 trên CUDA.
-        KHÔNG kiểm tra torch.is_autocast_enabled() vì trong backward pass
-        checkpoint gọi lại hàm này nhưng autocast đã tắt → nếu dùng float16
-        cho recompute sẽ gây NaN gradient do mất precision ở kênh mở rộng.
+        [FP32] Không cần ép float32 vì toàn bộ model chạy FP32.
         """
-        if Z.device.type == 'cuda':
-            return self.expansion_block(Z.float()).to(Z.dtype)
         return self.expansion_block(Z)

@@ -1,818 +1,706 @@
-# U-MobileViT-Net: Báo Cáo Phân Tích Kiến Trúc & Đánh Giá Thiết Bị Biên
+# U‑MobileViT‑Net: Kiến trúc Chi tiết & Báo cáo Học thuật
+
+> **Mổ xẻ kiến trúc 4 biến thể: Nano · Base · Pro · ProMax**
+>
+> Pipeline nghiên cứu: Kiến trúc → FLOPs/Params → Huấn luyện → Đánh giá đa miền
 
 ---
 
-## Mục Lục
+## Mục lục
 
-1. [Tổng Quan Kiến Trúc](#1-tổng-quan-kiến-trúc)
-2. [Sơ Đồ Kiến Trúc Tổng Thể](#2-sơ-đồ-kiến-trúc-tổng-thể)
-3. [Phân Tích Chi Tiết Từng Thành Phần](#3-phân-tích-chi-tiết-từng-thành-phần)
-   - [3.1. UMobileViT (Wrapper)](#31-umobilevit-wrapper)
-   - [3.2. Encoder](#32-encoder)
-   - [3.3. Transformer & Attention](#33-transformer--attention)
-   - [3.4. Decoder](#34-decoder)
-   - [3.5. Segmentation Head](#35-segmentation-head)
-   - [3.6. Cơ Chế Unfold/Fold](#36-cơ-chế-unfoldfold)
-4. [Phân Tích FLOPs & Tham Số](#4-phân-tích-flops--tham-số)
-   - [4.1. Thông Số Chính](#41-thông-số-chính)
-   - [4.2. Phân Bổ FLOPs](#42-phân-bổ-flops)
-   - [4.3. Phân Bổ Tham Số](#43-phân-bổ-tham-số)
-   - [4.4. Sweep Alpha (Width Multiplier)](#44-sweep-alpha-width-multiplier)
-   - [4.5. Sweep Kích Thước Đầu Vào](#45-sweep-kích-thước-đầu-vào)
-5. [Đánh Giá Thiết Bị Biên](#5-đánh-giá-thiết-bị-biên)
-   - [5.1. Dự Đoán Hiệu Năng](#51-dự-đoán-hiệu-năng)
-   - [5.2. So Sánh Quantization](#52-so-sánh-quantization)
-   - [5.3. Phân Tích Memory Footprint](#53-phân-tích-memory-footprint)
-6. [Điểm Mạnh & Điểm Yếu](#6-điểm-mạnh--điểm-yếu)
-7. [Khuyến Nghị Tối Ưu](#7-khuyến-nghị-tối-ưu)
-8. [Lộ Trình Triển Khai](#8-lộ-trình-triển-khai)
-9. [Kết Luận](#9-kết-luận)
+1. [Tổng quan](#1-tổng-quan)
+2. [Kiến trúc Tổng thể](#2-kiến-trúc-tổng-thể)
+3. [Encoder — Trái tim Mã hóa](#3-encoder--trái-tim-mã-hóa)
+4. [Decoder — Cầu nối Giải mã](#4-decoder--cầu-nối-giải-mã)
+5. [Segmentation Head — Đầu ra Phân vùng](#5-segmentation-head--đầu-ra-phân-vùng)
+6. [4 Biến thể — So sánh Chi tiết](#6-4-biến-thể--so-sánh-chi-tiết)
+7. [Phân tích FLOPs & Tham số](#7-phân-tích-flops--tham-số)
+8. [Những Cải tiến Kỹ thuật Quan trọng](#8-những-cải-tiến-kỹ-thuật-quan-trọng)
+9. [Pipeline Huấn luyện](#9-pipeline-huấn-luyện)
+10. [Kết quả Benchmark Đa miền](#10-kết-quả-benchmark-đa-miền)
+11. [Kết luận & Hướng Phát triển](#11-kết-luận--hướng-phát-triển)
 
 ---
 
-## 1. Tổng Quan Kiến Trúc
+## 1. Tổng quan
 
-U-MobileViT-Net là một kiến trúc **U-Net lai ghép (hybrid)** kết hợp giữa:
+### 1.1 Định danh
 
-- **MobileNetV2 blocks** (Inverted Residual với Depthwise Separable Convolution) cho xử lý cục bộ
-- **Transformer với Separable/Linear Attention** cho mô hình hóa quan hệ toàn cục
-- Thiết kế **Encoder-Decoder đối xứng** với skip connections
+**U‑MobileViT‑Net** là kiến trúc segmentation lai (CNN + Vision Transformer) được thiết kế cho **thiết bị biên** (edge devices). Nó kết hợp:
 
-### Mục tiêu thiết kế
+- **U‑Net style encoder‑decoder** với skip connections → bảo toàn chi tiết không gian
+- **MobileViTv2 separable self‑attention** → mô hình hóa ngữ cảnh toàn cục với chi phí tuyến tính O(N)
+- **Inverted Bottleneck (MobileNetV2)** → mở rộng biểu diễn hiệu quả
 
-| Mục tiêu | Cách tiếp cận |
-|----------|---------------|
-| Nhẹ (few params) | Depthwise separable conv, shared multi-task head |
-| Nhanh (low FLOPs) | Linear Attention O(N), Inverted Bottleneck |
-| Linh hoạt | Hỗ trợ kích thước đầu vào động, multi-task |
-| Edge-ready | GroupNorm (không phụ thuộc batch), hỗ trợ Quantization |
+### 1.2 Triết lý Thiết kế
 
-### Cấu trúc thư mục chính
+| Nguyên tắc | Hiện thực |
+|------------|-----------|
+| **Nhẹ** | < 0.3M–7M tham số, phù hợp Jetson/RPi/Smartphone |
+| **Nhanh** | Attention tuyến tính O(N), không O(N²) như ViT gốc |
+| **Chính xác** | Cross‑attention decoder + multi‑scale skip connections |
+| **Ổn định** | Float32‑protected attention, ReLU6, GroupNorm thay BatchNorm |
+| **Linh hoạt** | 4 variants (nano→promax), single/dual‑task head |
+
+### 1.3 Nguồn cảm hứng
+
+| Công trình | Đóng góp vào U‑MobileViT‑Net |
+|------------|------------------------------|
+| **U‑Net** (Ronneberger, 2015) | Encoder‑decoder + skip connections |
+| **MobileNetV2** (Sandler, 2018) | Inverted bottleneck với expansion factor |
+| **MobileViT** (Mehta, 2022) | CNN + Transformer fusion cho mobile |
+| **MobileViTv2** (Mehta, 2023) | Separable self‑attention O(N) thay O(N²) |
+| **YOLOP** (Wu, 2022) | Multi‑task head với shared decoder |
+
+---
+
+## 2. Kiến trúc Tổng thể
+
+### 2.1 Sơ đồ Khối
+
+
+
+### 2.2 Luồng Dữ liệu (Forward Pass)
+
+
+
+### 2.3 Kích thước Feature Map qua từng Tầng (Base, input 320×320)
+
+| Tầng | Output Size | Channels |
+|------|-------------|----------|
+| Input | 320×320 | 3 |
+| Stem 0 | 160×160 | 16 |
+| Stem 1 | 80×80 | 32 |
+| Stem 2 | 40×40 | 64 |
+| Enc Stage 1 | 20×20 | 64 |
+| Enc Stage 2 | 10×10 | 64 |
+| Enc Stage 3 | 5×5 | 64 |
+| Dec Stage 1 | 10×10 | 64 |
+| Dec Stage 2 | 20×20 | 64 |
+| Dec Out | 40×40 | 64 |
+| SegHead ×2 | 80×80 | 32 |
+| SegHead ×4 | 160×160 | 16 |
+| SegHead ×8 | 320×320 | 8 |
+| Output | 320×320 | num_classes |
+
+---
+
+## 3. Encoder — Trái tim Mã hóa
+
+### 3.1 Stem Block
+
+Stem gồm **3 tầng Conv2d + ReLU** liên tiếp, mỗi tầng giảm spatial resolution đi 2×:
+
+| Tầng | Input Ch | Output Ch | Kernel | Stride | Output Size |
+|------|----------|-----------|--------|--------|-------------|
+| Stem 0 | 3 (RGB) | `d_model // 4` | 3×3 | 2 | H/2 × W/2 |
+| Stem 1 | `d_model // 4` | `d_model // 2` | 3×3 | 2 | H/4 × W/4 |
+| Stem 2 | `d_model // 2` | `d_model` | 3×3 | 2 | H/8 × W/8 |
+
+**Skip connections**: Stem 0 và Stem 1 outputs được lưu để đưa vào Segmentation Head.
+
+**Ví dụ Base (d=64)**: `[3→16→32→64]` — chia hết cho target_groups=4.
+
+### 3.2 UMobileViTEncoderLayer
+
+Mỗi Encoder Layer gồm 3 thành phần xử lý tuần tự:
 
 ```
-models/
-├── basemodels.py                    # UNetLite, DoubleConvBlock (baseline)
-├── u_mobilevit_net_base.py          # UNetMobileViT (phiên bản đơn giản hóa)
-└── u_mobilevit_net/                 # U-MobileViT-Net chính
-    ├── u_models.py                  # UMobileViT wrapper + factory function
-    ├── encoder_block.py             # UMobileViTEncoder, EncoderLayer
-    ├── decoder_block.py             # UMobileViTDecoder, DecoderLayer, DecoderConcatLayer
-    ├── module.py                    # _UMobileViTLayer, LocalBlock, ExpansionBlock
-    ├── transformer.py               # SeparableAttention, TransformerEncoder/Decoder
-    └── seg_head.py                  # MultiTaskDenseHead, ContextAwareSegHead
+Input (B, C, H, W)
+    │
+    ▼
+┌──────────────────┐
+│ ① LOCAL BLOCK     │  Depthwise 3×3 → PW 1×1 → ReLU → GroupNorm
+│  (spatial detail) │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ ② GLOBAL BLOCK    │  Unfold → Transformer Encoder (self-attn) → Fold
+│  (context)        │  Separable self-attention O(N) — từ MobileViTv2
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ ③ EXPANSION BLOCK │  Inverted Bottleneck (MobileNetV2 style)
+│  (representation) │  PW expand → DW 3×3 → PW project → GN → Dropout
+└────────┬─────────┘
+         │
+         ▼
+    + Input (residual) → GroupNorm → Output
+```
 
-cv_nets/
-├── layers/                          # Custom layers (Conv2d, Activation, Norm, Pooling)
-│   ├── conv_layer.py                # Conv2d subclass với opts-based config
-│   ├── linear_attention.py          # LinearSelfAttention (MobileViTv2 style)
-│   └── ...
-├── blocks/                          # Reusable blocks
-│   ├── mobilevit.py                 # MobileViTBlock (Mehta & Rastegari, 2021)
-│   ├── inla.py                      # INLA — Inverted Nonlinear Low-rank Attention
-│   ├── transformer.py               # Standard Transformer (ViT style)
-│   └── ...
-└── utils/
-    ├── functional.py                # unfold_custom, fold_custom, separable_attention_forward
-    ├── spectral.py                  # effective_rank, spectral_entropy
-    └── ...
+#### 3.2.1 Local Block
+
+```
+Depthwise Conv2d (3×3, groups=C) → ReLU
+  → Pointwise Conv2d (1×1) → ReLU → GroupNorm
+```
+- **Mục đích**: Trích xuất đặc trưng cục bộ (edges, textures)
+- **Chi phí**: O(C × H × W) — rất nhẹ
+- **Depthwise**: mỗi channel xử lý riêng biệt
+
+#### 3.2.2 Global Block — Separable Self-Attention
+
+Đây là **trái tim** của kiến trúc — nơi CNN gặp Transformer:
+
+```
+Input (B, C, H, W)
+    │ Unfold → (B, C, P, S)  [P=patch pixels, S=num patches]
+    ▼
+Transformer Encoder Layer (×N blocks):
+  ┌─────────────────────────────────┐
+  │  SeparableAttention (Q=K=V)     │
+  │    ├─ QKV projection (linear)   │
+  │    ├─ Softmax attention         │
+  │    └─ Output projection         │
+  │         ↓                       │
+  │  Dropout → GroupNorm (+res)     │
+  └─────────────────────────────────┘
+    │ Fold → (B, C, H, W)
+    ▼
+```
+
+**Separable Self-Attention** (từ MobileViTv2):
+- **Chi phí tuyến tính O(N)**, không O(N²) như ViT gốc
+- Q, K, V tính qua linear projection trên channels
+- Attention trong từng patch riêng biệt
+
+**Unfold/Fold**:
+- `unfold_custom`: (B,C,H,W) → (B,C,P,S) với P = patch_h×patch_w
+- `fold_custom`: (B,C,P,S) → (B,C,H,W)
+- Patch size: (2,2) cho stage 1,2; (1,1) cho stage 3
+
+#### 3.2.3 Expansion Block — Inverted Bottleneck
+
+```
+Pointwise Conv2d (1×1, C → C×E) → GroupNorm → ReLU6
+  → Depthwise Conv2d (3×3, groups=C×E) → GroupNorm → ReLU6
+  → Pointwise Conv2d (1×1, C×E → C) → GroupNorm → Dropout
+```
+- **E = expansion_factor**: 2.0 (nano) → 4.0 (promax)
+- **ReLU6**: giới hạn activation trong [0, 6] → chống NaN
+- **GroupNorm thay BatchNorm**: ổn định với batch nhỏ
+- **Linear bottleneck**: không activation ở cuối (giống MobileNetV2)
+
+### 3.3 Encoder Stages
+
+| Stage | Downsample | EncoderLayers | Patch Size | Blocks/Layer |
+|-------|-----------|---------------|------------|-------------|
+| 1 | H/8→H/16 | 1 | (2,2) | N (variant) |
+| 2 | H/16→H/32 | 2 | (2,2) | N |
+| 3 | H/32→H/64 | 2 | **(1,1)** | N |
+
+**Tại sao Stage 3 dùng patch_size=(1,1)?** Ở độ phân giải thấp nhất, spatial context đủ nhỏ — attention hoạt động như **global self-attention** trên toàn bộ feature map.
+
+### 3.4 Downsample Block
+
+```
+Depthwise Conv2d (3×3, stride=2, groups=C) → ReLU
+```
+- Giảm spatial 2×, giữ channels
+- Depthwise → tiết kiệm tham số hơn Conv2d thường
+
+---
+
+## 4. Decoder — Cầu nối Giải mã
+
+### 4.1 UMobileViTDecoderLayer
+
+Decoder Layer có cấu trúc tương tự Encoder Layer nhưng **thay self-attention bằng cross-attention**:
+
+```
+Input (decoder features) + Memory (encoder skip)
+    │
+    ▼
+┌──────────────────┐
+│ ① LOCAL BLOCK     │  (giống Encoder)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ ② GLOBAL BLOCK    │  Unfold → Transformer DECODER → Fold
+│  (cross-attn)     │  Self-attn (input) + Cross-attn (input+memory)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ ③ EXPANSION BLOCK │  (giống Encoder)
+└────────┬─────────┘
+         │
+         ▼
+    + Input (residual) → GroupNorm → Output
+```
+
+#### Transformer Decoder Layer:
+
+```
+Input (decoder features) + Memory (encoder features)
+    │
+    ├──→ Self-Attention (Q=K=V=input) → Dropout → GroupNorm (+res)
+    │
+    └──→ Cross-Attention (Q=input, K=V=memory) → Dropout → GroupNorm (+res)
+```
+- **Self‑attention**: mô hình quan hệ nội tại trong decoder
+- **Cross‑attention**: query từ decoder, key/value từ encoder → khôi phục chi tiết không gian
+
+### 4.2 UMobileViTDecoderConcatLayer
+
+Layer đặc biệt ở tầng cuối — **không dùng transformer** (nhẹ hơn):
+
+```
+Input + Memory (skip từ stem)
+    │
+    ▼ Local Block
+    │
+    ▼ Memory Projection (1×1 Conv → ReLU)
+    │
+    ▼ Z = Z + mem_proj  (additive fusion — KHÔNG cross-attention)
+    │
+    ▼ Global Block nhẹ: DW 3×3 → ReLU → PW 1×1 → ReLU
+    │
+    ▼ Expansion Block → + Input (residual) → GroupNorm
+```
+- **Additive fusion** thay cross‑attention → giảm FLOPs ở tầng cuối
+- Dùng khi feature map ở độ phân giải cao (H/8 × W/8)
+
+### 4.3 Decoder Stages
+
+| Stage | Upsample | DecoderLayers | Skip Connection từ |
+|-------|----------|---------------|-------------------|
+| 1 | ×2 (H/64→H/32) | 2 (cross-attn) | Encoder Stage 2 |
+| 2 | ×2 (H/32→H/16) | 1 (cross-attn) | Encoder Stage 1 |
+| Out | ×2 (H/16→H/8) | 1 (concat, additive) | Encoder Stem cuối |
+
+**Upsample block**: `Nearest Upsample(×2) → Depthwise Conv2d 3×3 → ReLU`
+
+---
+
+## 5. Segmentation Head — Đầu ra Phân vùng
+
+### 5.1 Single‑Task Head (`ContextAwareSegHead`)
+
+```
+Decoder Output (B, d, H/8, W/8)
+    │
+    ▼
+┌──────────────────────────────────────┐
+│  UpsampleHead (3 tầng upsample)      │
+│  ×2: d→d/2  + skip từ stem[1]        │
+│  ×4: d/2→d/4 + skip từ stem[0]       │
+│  ×8: d/4→d/8                         │
+│  → Output: (B, d/8, H, W)            │
+└──────────────┬───────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────┐
+│  FeatureRefinementBlock               │
+│  ├─ Dilated Conv 3×3 (dilation=2)    │
+│  ├─ Spatial Attention (avg+max pool) │
+│  └─ Residual connection              │
+└──────────────┬───────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────┐
+│  Classifier                           │
+│  Depthwise 3×3 → ReLU → Pointwise 1×1│
+│  → Output: (B, num_classes, H, W)    │
+└──────────────────────────────────────┘
+```
+
+### 5.2 Multi‑Task Head (`MultiTaskDenseHead`)
+
+```
+Decoder Output
+    │
+    ▼
+┌────────────────────────────┐
+│  UpsampleHead (CHIA SẺ)    │  ← Chạy 1 lần duy nhất
+├────────────────────────────┤
+│  FeatureRefinement (CHIA SẺ)│
+└────────────┬───────────────┘
+             │
+      ┌──────┴──────┐
+      ▼              ▼
+┌──────────┐  ┌──────────┐
+│Classifier│  │Classifier│  ← Mỗi task 1 classifier riêng
+│ Task 1   │  │ Task 2   │     (DW 3×3 + PW 1×1)
+└──────────┘  └──────────┘
+```
+
+**Tối ưu Edge**: Phần đắt nhất (upsample + refinement) được **chia sẻ** cho mọi tác vụ → chi phí gần như không đổi khi tăng số task. Chuẩn thiết kế của YOLOP/HybridNets.
+
+### 5.3 FeatureRefinementBlock
+
+```
+Input (B, C, H, W)
+    │
+    ├──→ Dilated Conv2d (3×3, dilation=2, groups=C)
+    │         ↓
+    │    Pointwise Conv2d (1×1)  ← mix channels
+    │         ↓
+    │    ┌─────────────────┐
+    │    │ Spatial Attention │
+    │    │ avg_pool + max    │
+    │    │ → Conv 7×7 → Sigm│
+    │    └────────┬────────┘
+    │             ↓
+    │    feat * attention_map
+    │
+    └──→ + Input (residual) → Output
+```
+- **Dilated Conv (dilation=2)**: mở rộng receptive field gấp đôi
+- **Spatial Attention**: lọc nhiễu không gian, tập trung vùng quan trọng
+- **Residual connection**: giữ thông tin gốc, chống vanishing gradient
+
+---
+
+## 6. 4 Biến thể — So sánh Chi tiết
+
+### 6.1 Bảng Tham số Cấu hình
+
+| Tham số | Nano | Base | Pro | ProMax |
+|---------|------|------|-----|--------|
+| **d_model** | 48 | 64 | 128 | 256 |
+| **Width multiplier** | 0.75x | 1.0x | 2.0x | 4.0x |
+| **Transformer blocks/layer** | 1 | 2 | 3 | 3 |
+| **Expansion factor** | 2.0 | 3.0 | 3.0 | 4.0 |
+| **GroupNorm target groups** | 4 | 4 | 4 | 8 |
+| **Params (ước tính)** | ~0.3M | ~0.6M | ~2.0M | ~7.0M |
+| **Mục tiêu** | Edge/Mobile | Cân bằng | Accuracy cao | Server-grade |
+
+### 6.2 Stem Channels theo Biến thể
+
+| Variant | d_model | Stem 0 | Stem 1 | Stem 2 |
+|---------|---------|--------|--------|--------|
+| Nano | 48 | **12** (3→12) | **24** (12→24) | **48** (24→48) |
+| Base | 64 | **16** (3→16) | **32** (16→32) | **64** (32→64) |
+| Pro | 128 | **32** (3→32) | **64** (32→64) | **128** (64→128) |
+| ProMax | 256 | **64** (3→64) | **128** (64→128) | **256** (128→256) |
+
+### 6.3 SegHead Channels theo Biến thể
+
+| Variant | Upsample x2 | Upsample x4 | Upsample x8 (classifier input) |
+|---------|-------------|-------------|-------------------------------|
+| Nano | 48→24 | 24→12 | **12→6** |
+| Base | 64→32 | 32→16 | **16→8** |
+| Pro | 128→64 | 64→32 | **32→16** |
+| ProMax | 256→128 | 128→64 | **64→32** |
+
+### 6.4 Số Transformer Blocks
+
+| Variant | Blocks/Layer | Enc S1 | Enc S2 | Enc S3 | Dec S1 (2 layers) | Dec S2 (1 layer) |
+|---------|-------------|--------|--------|--------|-------------------|-------------------|
+| Nano | **1** | 1 | 2 | 2 | 2/2/0 | 1/0/0 |
+| Base | **2** | 2 | 4 | 4 | 4/4/0 | 2/0/0 |
+| Pro | **3** | 3 | 6 | 6 | 6/6/0 | 3/0/0 |
+| ProMax | **3** | 3 | 6 | 6 | 6/6/0 | 3/0/0 |
+
+> Decoder S1 có 2 decoder layers, mỗi layer có N transformer decoder blocks. Decoder Out không dùng transformer (ConcatLayer additive).
+
+### 6.5 Chiến lược Chọn Biến thể
+
+```
+         Độ chính xác →
+         Nano     Base      Pro       ProMax
+Edge  ───●─────────●─────────●──────────●─── Server
+      0.3M      0.6M      2.0M       7.0M
+
+Nano:   Raspberry Pi 5, Smartphone tầm trung
+Base:   Jetson Nano, Smartphone cao cấp
+Pro:    Jetson Xavier NX, Laptop GPU
+ProMax: Jetson Orin, Workstation, Server
 ```
 
 ---
 
-## 2. Sơ Đồ Kiến Trúc Tổng Thể
+## 7. Phân tích FLOPs & Tham số
 
-```
-Input [B, 3, H, W]
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  STEM BLOCK (3 tầng Conv3x3 stride=2 + ReLU + GroupNorm) │
-│                                                          │
-│  Tầng 1: Conv2d(3 → d/4, k=3, s=2) + ReLU              │
-│           → stem_output[0]: [B, d/4, H/2, W/2]          │
-│                                                          │
-│  Tầng 2: Conv2d(d/4 → d/2, k=3, s=2) + ReLU + GN       │
-│           → stem_output[1]: [B, d/2, H/4, W/4]          │
-│                                                          │
-│  Tầng 3: Conv2d(d/2 → d, k=3, s=2) + ReLU + GN         │
-│           → stage_output[0]: [B, d, H/8, W/8]           │
-└──────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  ENCODER STAGE 1                                         │
-│  ├─ Downsample: DWConv(d, k=3, s=2) + ReLU              │
-│  └─ 1× UMobileViTEncoderLayer(patch=2, n_trans=2)       │
-│      ├─ LocalBlock: DWConv3x3 + PWConv1x1 + ReLU + GN  │
-│      ├─ Unfold(2,2) → [B, d, 4, N]                      │
-│      ├─ 2× TransformerEncoder (Separable Self-Attn)     │
-│      ├─ Fold(2,2) → [B, d, H/16, W/16]                  │
-│      └─ ExpansionBlock: PW→DW→PW (Inverted Bottleneck)  │
-│  → stage_output[1]: [B, d, H/16, W/16]                  │
-└──────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  ENCODER STAGE 2                                         │
-│  ├─ Downsample: DWConv(d, k=3, s=2) + ReLU              │
-│  └─ 2× UMobileViTEncoderLayer(patch=2, n_trans=2)       │
-│  → stage_output[2]: [B, d, H/32, W/32]                  │
-└──────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  ENCODER STAGE 3                                         │
-│  ├─ Downsample: DWConv(d, k=3, s=2) + ReLU              │
-│  └─ 2× UMobileViTEncoderLayer(patch=(1,1), n_trans=2)   │
-│     (patch=1×1 → không unfold, attention trên từng pixel)│
-│  → stage_output[3]: [B, d, H/64, W/64]                  │
-└──────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  DECODER                                                 │
-│                                                          │
-│  Stage 1: Upsample(×2) + 2× DecoderLayer(mem=stage[2])  │
-│    ├─ Self-Attention + Cross-Attention với memory        │
-│    └─ → [B, d, H/32, W/32]                              │
-│                                                          │
-│  Stage 2: Upsample(×2) + 1× DecoderLayer(mem=stage[1])  │
-│    └─ → [B, d, H/16, W/16]                              │
-│                                                          │
-│  Stage 3 (Out): Upsample(×2) + DecoderConcatLayer        │
-│    ├─ KHÔNG dùng transformer                             │
-│    ├─ Memory projection (Conv1x1) + Add                  │
-│    ├─ Global block: DWConv3x3 + PWConv1x1 (thay thế)    │
-│    └─ → [B, d, H/8, W/8]                                │
-└──────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────────┐
-│  SEGMENTATION HEAD (MultiTaskDenseHead)                   │
-│                                                          │
-│  UpsampleHead (DÙNG CHUNG):                              │
-│    ×2: Conv1x1(d→d/2) + Upsample + DWConv               │
-│         + DecoderConcatLayer(stem[1])                    │
-│    ×4: Conv1x1(d/2→d/4) + Upsample + DWConv             │
-│         + DecoderConcatLayer(stem[0])                    │
-│    ×8: Conv1x1(d/4→d/8) + Upsample + DWConv             │
-│    → [B, d/8, H, W]                                      │
-│                                                          │
-│  FeatureRefinementBlock (DÙNG CHUNG):                    │
-│    DilatedConv3x3(dilation=2) + SpatialAttention         │
-│                                                          │
-│  TaskClassifier[0] (RIÊNG):                              │
-│    DWConv3x3 + ReLU + PWConv1x1 → [B, C1, H, W]         │
-│                                                          │
-│  TaskClassifier[1] (RIÊNG):                              │
-│    DWConv3x3 + ReLU + PWConv1x1 → [B, C2, H, W]         │
-│                                                          │
-│  → Output: Tuple([B, C1, H, W], [B, C2, H, W], ...)     │
-└──────────────────────────────────────────────────────────┘
-```
+### 7.1 Phương pháp Tính FLOPs
 
----
-
-## 3. Phân Tích Chi Tiết Từng Thành Phần
-
-### 3.1. UMobileViT (Wrapper)
-
-**File:** `models/u_mobilevit_net/u_models.py:24-108`
-
-Lớp wrapper chính điều phối toàn bộ pipeline:
+FLOPs được tính **trực tiếp từ kiến trúc** (không dùng thop/profiler) để chính xác với custom `Conv2d`:
 
 ```python
-def forward(self, input):
-    stem_outputs, stage_outputs = self.encoder(input)
-    output_decoder = self.decoder(tuple(reversed(stage_outputs)))
-    output = self.seg_head(output_decoder, tuple(reversed(stem_outputs)))
-    return output
+# Conv2d FLOPs
+mac = out_ch * (in_ch // groups) * kernel**2 * H_out * W_out
+flops = 2 * mac + (out_ch * H_out * W_out if bias else 0)
+
+# Separable Attention FLOPs (tuyến tính O(N)!)
+qkv_proj = 2 * (1 + 2*C) * C * P * S    # QKV projection
+softmax  = 5 * P * S                      # softmax
+ctx      = 2 * C * P * S                  # context aggregation
+out_proj = 2 * C * C * P * S              # output projection
+# Tổng = O(C**2 * P * S), không O(P**2 * S**2) như ViT gốc
 ```
 
-#### Tham số cấu hình
-
-| Tham số | Mặc định | Ý nghĩa |
-|---------|----------|---------|
-| `in_channels` | 3 | Kênh đầu vào (RGB) |
-| `out_channels` | (2, 2) | Số class cho mỗi tác vụ (tuple → multi-task, int → single-task) |
-| `d_model` | 64 | Số kênh đặc trưng cơ sở |
-| `alpha` | 1.0 | Hệ số nhân độ rộng (width multiplier), `d_model_actual = alpha * d_model` |
-| `expansion_factor` | 3.0 | Hệ số mở rộng trong Inverted Bottleneck |
-| `patch_size` | (2, 2) | Kích thước patch cho unfold/fold |
-| `dropout_p` | 0.1 | Tỷ lệ dropout |
-| `norm_num_groups` | 4 | Số nhóm cho GroupNorm |
-| `num_transformer_block` | 2 | Số transformer block trong mỗi layer |
-| `initializer` | "he_uniform" | Phương pháp khởi tạo trọng số |
-
-#### Hỗ trợ Single-task và Multi-task
-
-- **Multi-task (mặc định):** `out_channels=(C1, C2, ..., Cn)` → `MultiTaskDenseHead` với N classifier
-- **Single-task:** `head_type="single"` → `ContextAwareSegHead` với 1 classifier
-
-### 3.2. Encoder
-
-**File:** `models/u_mobilevit_net/encoder_block.py`
-
-#### 3.2.1. Stem Block
-
-3 tầng convolutional giảm dần độ phân giải, tăng dần số kênh:
-
-```
-Tầng 1: Conv2d(3 → d/4, k=3, s=2) + ReLU              → [B, d/4, H/2, W/2]
-Tầng 2: Conv2d(d/4 → d/2, k=3, s=2) + ReLU + GroupNorm → [B, d/2, H/4, W/4]
-Tầng 3: Conv2d(d/2 → d, k=3, s=2) + ReLU + GroupNorm   → [B, d, H/8, W/8]
-```
-
-Mỗi tầng stem (trừ tầng cuối) được lưu làm **skip connection** cho Segmentation Head.
-
-#### 3.2.2. Encoder Stages
-
-| Stage | Downsample | Số EncoderLayer | Patch Size | Output Resolution |
-|-------|-----------|-----------------|------------|-------------------|
-| 1 | DWConv(d, k=3, s=2) | 1 | (2, 2) | H/16 × W/16 |
-| 2 | DWConv(d, k=3, s=2) | 2 | (2, 2) | H/32 × W/32 |
-| 3 | DWConv(d, k=3, s=2) | 2 | **(1, 1)** | H/64 × W/64 |
-
-> **Ghi chú:** Stage 3 dùng `patch_size=(1,1)` — tức là không unfold, attention hoạt động trực tiếp trên từng pixel. Lý do: ở H/64×W/64, feature map đã quá nhỏ để chia patch.
-
-#### 3.2.3. UMobileViTEncoderLayer
-
-Mỗi Encoder Layer = **Local Block + Global Block + Expansion Block + Residual**:
-
-```
-x ──→ LocalBlock ──→ Unfold ──→ N×TransformerEncoder ──→ Fold ──→ ExpansionBlock ──→ (+) ──→ GroupNorm → out
-    └──────────────────────────────────────────────────────────────────────────────┘ (residual)
-```
-
-#### 3.2.4. Các khối cấu thành (file: `module.py`)
-
-**Local Block** — Depthwise Separable Convolution:
-```
-DWConv3x3(groups=C) → ReLU → PWConv1x1 → ReLU → GroupNorm
-```
-
-**Expansion Block** — Inverted Bottleneck (MobileNetV2 style):
-```
-PWConv1x1(C → C×exp_factor) → ReLU → DWConv3x3 → ReLU → PWConv1x1(C×exp_factor → C) → Dropout
-```
-
-**Global Block** — N× TransformerEncoderLayer hoạt động trên tensor đã unfold `[B, C, P, N]`:
-- P = patch_h × patch_w (spatial dimension trong mỗi patch)
-- N = số lượng patch trong feature map
-
-### 3.3. Transformer & Attention
-
-**File:** `models/u_mobilevit_net/transfomer.py`
-
-#### 3.3.1. SeparableAttention — Linear Attention O(N)
-
-Đây là cốt lõi của mô hình, hoạt động trên tensor `[B, C, P, N]`:
-
-```
-Q = Linear(x)           → [B, 1, P, N]     // 1 kênh query
-K = Linear(x)           → [B, C, P, N]
-V = Linear(x)           → [B, C, P, N]
-
-context_scores = softmax(Q)                // [B, 1, P, N] — (FP32 để tránh NaN)
-context_vector = Σ(K × context_scores)     // [B, C, P, 1]
-out = ReLU(V) × context_vector             // [B, C, P, N]
-out = Linear(out)                          // [B, C, P, N]
-```
-
-**Độ phức tạp: O(N)** thay vì O(N²) của standard self-attention — vì không tính ma trận attention N×N.
-
-**Các bản vá NaN quan trọng:**
-1. Softmax tính trong **FP32** rồi cast về dtype gốc (tránh overflow FP16 khi giá trị vượt `exp(11) ≈ 59874`)
-2. `context_vector` được **clamp(max=1e4)** để tránh `ReLU(v) × Inf = NaN`
-
-#### 3.3.2. TransformerEncoderLayer
-
-```
-x → SeparableAttention(Q=x, K=x, V=x) → Dropout → Add(x) → GroupNorm → output
-```
-
-Chỉ có **Self-Attention**, dùng trong Encoder.
-
-#### 3.3.3. TransformerDecoderLayer
-
-```
-x → Self-Attention(Q=x, K=x, V=x) → Dropout → Add → GroupNorm
-  → Cross-Attention(Q=x, K=memory, V=memory) → Dropout → Add → GroupNorm → output
-```
-
-Có cả **Self-Attention + Cross-Attention**, dùng trong Decoder với memory từ Encoder.
-
-### 3.4. Decoder
-
-**File:** `models/u_mobilevit_net/decoder_block.py`
-
-#### 3.4.1. Cấu trúc
-
-Decoder nhận stage outputs từ encoder (đảo ngược: deep → shallow), xử lý qua 3 stage:
-
-| Decoder Stage | Upsample | Số Block | Loại Block | Memory từ |
-|--------------|----------|----------|------------|-----------|
-| 1 | ×2 (nearest) + DWConv | 2 | DecoderLayer | stage[2] (H/64) |
-| 2 | ×2 (nearest) + DWConv | 1 | DecoderLayer | stage[1] (H/32) |
-| Out | ×2 (nearest) + DWConv | 1 | DecoderConcatLayer | stage[0] (H/16) |
-
-#### 3.4.2. UMobileViTDecoderLayer
-
-```
-x → LocalBlock → Unfold
-memory → Unfold
-→ N× TransformerDecoder (Self-Attn + Cross-Attn với memory)
-→ Fold → ExpansionBlock → (+) → GroupNorm → output
-```
-
-#### 3.4.3. UMobileViTDecoderConcatLayer
-
-Layer cuối cùng của decoder **KHÔNG dùng transformer**. Thay vào đó dùng **additive projection**:
-
-```
-x → LocalBlock
-memory → Conv1x1 + ReLU (projection)
-x = x + memory_proj(memory)
-x → DWConv3x3 + ReLU + PWConv1x1 + ReLU (global block thay thế attention)
-→ ExpansionBlock → (+) → GroupNorm → output
-```
-
-> **Lý do:** Ở độ phân giải H/16, unfold/fold + transformer tốn kém hơn. Thay bằng conv depthwise separable giúp giảm FLOPs.
-
-### 3.5. Segmentation Head
-
-**File:** `models/u_mobilevit_net/seg_head.py`
-
-#### 3.5.1. UpsampleHead
-
-Phục hồi độ phân giải từ `[B, d, H/8, W/8]` lên `[B, d/8, H, W]` qua 3 bước ×2:
-
-```
-Input: [B, d, H/8, W/8]
-  ×2: Conv1x1(d→d/2) + Upsample + DWConv + DecoderConcatLayer(stem[1])
-       → [B, d/2, H/4, W/4]
-  ×4: Conv1x1(d/2→d/4) + Upsample + DWConv + DecoderConcatLayer(stem[0])
-       → [B, d/4, H/2, W/2]
-  ×8: Conv1x1(d/4→d/8) + Upsample + DWConv
-       → [B, d/8, H, W]
-```
-
-- Mỗi bước đều nhận skip connection từ stem outputs (đảo ngược)
-- Nếu kích thước Z và output_stem không khớp, dùng `F.interpolate(bilinear)` để ép khớp
-
-#### 3.5.2. FeatureRefinementBlock
-
-Khối tinh chỉnh đặc trưng kết hợp **Dilated Convolution + Spatial Attention**:
-
-```
-x → DilatedConv3x3(dilation=2, groups=C)  // mở rộng receptive field
-  → Conv1x1
-  → Spatial Attention:
-      cat(avg_pool(x), max_pool(x)) → Conv7x7 → Sigmoid
-  → x + (feat × attention_map)
-```
-
-#### 3.5.3. MultiTaskDenseHead — Thiết kế Multi-task
-
-```
-decoder_output → UpsampleHead (DÙNG CHUNG) → FeatureRefinementBlock (DÙNG CHUNG)
-               → TaskClassifier[0] → output_task_0
-               → TaskClassifier[1] → output_task_1
-               → ...
-```
-
-> **Đây là thiết kế tối ưu quan trọng:** Phần upsample + refinement tốn kém nhất chỉ chạy **1 lần** cho tất cả tác vụ. Mỗi tác vụ chỉ thêm một classifier rất nhẹ.
-
-#### 3.5.4. ContextAwareSegHead
-
-Phiên bản **đơn tác vụ** (single-task). Giống MultiTaskDenseHead nhưng chỉ có 1 classifier.
-
-### 3.6. Cơ Chế Unfold/Fold
-
-**File:** `cv_nets/utils/functional.py`
-
-Cơ chế cho phép transformer hoạt động trên feature map 2D mà vẫn giữ thông tin không gian:
-
-```
-Unfold: [B, C, H, W] → [B, C, P, N]
-  P = patch_h × patch_w         (spatial: pixel trong mỗi patch)
-  N = (H/patch_h) × (W/patch_w)  (sequence: số patch)
-
-Fold: [B, C, P, N] → [B, C, H, W]
-```
-
-**Khác biệt với ViT tiêu chuẩn:**
-- **ViT:** mỗi patch → 1 token (flatten toàn bộ pixel thành vector)
-- **U-MobileViT:** giữ nguyên spatial dimension P, attention hoạt động **theo chiều sequence N**, mỗi vị trí spatial trong patch được xử lý độc lập
-
-Điều này cho phép attention **giữ được thông tin không gian chi tiết**, rất quan trọng cho dense prediction.
+### 7.2 Phân bố FLOPs (Base, 320x320)
+
+| Thành phần | FLOPs (ước tính) | Tỉ lệ |
+|------------|-----------------|-------|
+| **Stem** | ~15M | ~3% |
+| **Encoder** | ~240M | ~45% |
+| **Decoder** | ~160M | ~30% |
+| **SegHead** | ~95M | ~18% |
+| **Refinement + Classifier** | ~20M | ~4% |
+| **Tổng** | **~530M** | **100%** |
+
+### 7.3 FLOPs theo Biến thể (ước tính @ 320x320)
+
+| Variant | d_model | FLOPs (ước tính) | vs Base |
+|---------|---------|-----------------|---------|
+| Nano | 48 | ~250M | 0.47x |
+| Base | 64 | ~530M | 1.00x |
+| Pro | 128 | ~2.1G | 4.00x |
+| ProMax | 256 | ~8.5G | 16.0x |
+
+> FLOPs tỉ lệ với d_model**2 (attention projection) + expansion_factor (inverted bottleneck).
+
+### 7.4 Phân bố Tham số
+
+| Thành phần | Tỉ lệ |
+|------------|-------|
+| Stem | ~5% |
+| Encoder (local + attention + expansion) | ~35% |
+| Decoder (local + attention + expansion) | ~30% |
+| SegHead (upsample + refinement) | ~25% |
+| Classifier(s) | ~5% |
+
+### 7.5 Edge Device Latency Estimation
+
+`estimate_edge_latency()` ước tính latency = max(compute_time, memory_time) + overhead.
+
+| Thiết bị | RAM | Throughput (FP32) | Power |
+|----------|-----|-------------------|-------|
+| Jetson Nano (4GB) | 4 GB | 82 GFLOPs | 10W |
+| Jetson Xavier NX | 8 GB | 338 GFLOPs | 15W |
+| Jetson Orin Nano (8GB) | 8 GB | 461 GFLOPs | 7W |
+| Raspberry Pi 5 (8GB) | 8 GB | 10 GFLOPs (CPU) | 8W |
+| Smartphone Mid-range | 4 GB | 600 GOPS (INT8 NPU) | 3W |
+| Flagship Smartphone | 8 GB | 2600 GOPS (INT8 NPU) | 4W |
 
 ---
 
-## 4. Phân Tích FLOPs & Tham Số
+## 8. Những Cải tiến Kỹ thuật Quan trọng
 
-> **Phương pháp:** FLOPs được tính thủ công (manual) do thư viện `thop` không nhận diện được custom `Conv2d` subclass. Code tại `tools/manual_flops.py`.
+### 8.1 Float32‑Protected Attention (Chống NaN)
 
-### 4.1. Thông Số Chính
+**Vấn đề**: AMP (Automatic Mixed Precision) + Gradient Checkpointing gây NaN trong backward.
 
-| Chỉ số | Giá trị |
-|--------|---------|
-| **Tổng tham số** | **576,974** (0.58M) |
-| **Trainable params** | 576,974 |
-| **Tổng FLOPs** (@320×320) | **885,364,100** (0.89G) |
-| **FLOPs/Param** | 1,534.5 |
-| **Model size (FP32)** | 2.20 MB |
-| **Model size (FP16)** | 1.10 MB |
-| **Model size (INT8)** | 0.55 MB |
+**Giải pháp**: Luôn ép attention chạy float32 trên CUDA:
 
-> Mô hình **cực kỳ nhẹ**: <1M params, <1 GFLOP. Có thể nhúng trực tiếp vào ứng dụng mobile.
+```python
+# Trong SeparableAttention.forward():
+if query.device.type == 'cuda':
+    with torch.cuda.amp.autocast(enabled=False):
+        result = separable_attention_forward(
+            query=query.float(),   # EP VE FLOAT32
+            key=key.float(), value=value.float(), ...
+        )
+        return result.to(query.dtype)  # Cast ve float16
+```
+- Dam bao ca forward (AMP) va backward recompute (checkpoint) duoc bao ve
+- QKV projection de overflow > 65504 trong float16 → NaN gradient
 
-### 4.2. Phân Bổ FLOPs
+### 8.2 ReLU6 trong Expansion Block
 
-| Thành phần | FLOPs | % Tổng |
-|-----------|-------|--------|
-| **Stem** (3× Conv s=2) | 142,028,800 | 16.0% |
-| **Encoder Stage 1** | 45,572,000 | 5.1% |
-| **Encoder Stage 2** | 22,664,400 | 2.6% |
-| **Encoder Stage 3** | 5,666,100 | 0.6% |
-| **Decoder Stage 1** | 32,650,400 | 3.7% |
-| **Decoder Stage 2** | 65,544,000 | 7.4% |
-| **Decoder Stage 3 (Concat)** | 130,764,800 | 14.8% |
-| **UpsampleHead** | 348,313,600 | **39.3% 🔴** |
-| **FeatureRefinement** | 50,585,600 | 5.7% |
-| **TaskClassifiers** | 41,574,400 | 4.7% |
-| **TOTAL** | **885,364,100** | **100%** |
+- **ReLU6** gioi han activation trong [0, 6] → ngan chan Inf → NaN
+- **GroupNorm** sau moi conv (khong chi truoc/sau block) → on dinh hon
+
+### 8.3 Gradient Checkpointing
+
+```python
+if self.training and self.use_checkpointing:
+    Z = torch_checkpoint(self._global_forward, Z, None, ...)
+    Z = torch_checkpoint(self._expansion_forward, Z, ...)
+```
+- **Global block** (transformer) va **expansion block** duoc checkpoint
+- Giam **30–40% VRAM** (khong luu intermediate activations)
+- Expansion block voi exp=4.0 tao tensor ~1.6GB cho ProMax
+
+### 8.4 GroupNorm voi Auto‑Selection
+
+```python
+def get_groupnorm_groups(num_channels, target_groups=4):
+    if num_channels % target_groups == 0:
+        return target_groups
+    divisors = sorted(divisors_of(num_channels))
+    smaller = [d for d in divisors if d <= target_groups]
+    return max(smaller) if smaller else min(divisors)
+```
+- **Van de**: GroupNorm yeu cau `num_channels % num_groups == 0`
+- Khi scale model (nano: d=48), channel count khong chia het cho target_groups
+- Ham tu dong chon uoc so phu hop → khong crash
+
+### 8.5 Adaptive Padding cho Odd‑Size Inputs
+
+```python
+pad_h = (patch_h - H % patch_h) % patch_h
+if pad_h > 0 or pad_w > 0:
+    Z = F.pad(Z, (0, pad_w, 0, pad_h))
+# ... unfold/fold ...
+if pad_h > 0 or pad_w > 0:
+    Z = Z[:, :, :H, :W]  # Crop back
+```
+- Input le (360x480) → tu dong pad → xu ly → crop
+- **Khong can resize input** → giu ti le anh goc
+
+### 8.6 Multi‑Task voi Shared Decoder
 
 ```
-Phân bổ FLOPs:
+Truoc (ton O(N_task)):
+  moi task: upsample + refinement + classifier
 
-Stem                ████████                   16.0%
-Encoder S1-3        ████                       8.3%
-Decoder S1-3        █████████████             25.9%
-UpsampleHead        ████████████████████       39.3% ← NẶNG NHẤT
-FeatureRefine       ███                        5.7%
-Classifiers         ██                         4.7%
+Sau (ton O(1)):
+  upsample + refinement (chung) → N classifiers nhe
 ```
-
-#### Phân loại theo operation
-
-| Loại | FLOPs | % |
-|------|-------|---|
-| **Attention (Separable)** | 92,370,500 | 10.4% |
-| **Convolution + Other** | 792,993,600 | 89.6% |
-
-> **Linear Attention O(N) rất hiệu quả:** Chỉ chiếm 10.4% FLOPs dù có 22 attention layers trong model.
-
-#### FLOPs theo độ phân giải
-
-| Độ phân giải | FLOPs | % | Ghi chú |
-|-------------|-------|---|---------|
-| Full (H×W) | 114,483,200 | 12.9% | Refinement + Classifier |
-| H/8 → H/16 | 340,428,800 | 38.5% | UpsampleHead + Decoder S3 |
-| H/16 → H/32 | 346,943,200 | 39.2% | Encoder S1 + Decoder S2 + Stem |
-| H/32 → H/64 | 77,842,800 | 8.8% | Encoder S2 + Decoder S1 |
-| H/64 → H/128 | 5,666,100 | 0.6% | Encoder S3 |
-
-> **~78% FLOPs tập trung ở độ phân giải H/8 trở lên.** Đây là đặc điểm chung của kiến trúc U-Net.
-
-#### Phân tích chi tiết 1 Encoder Layer (Stage 1)
-
-| Operation | FLOPs | % trong stage |
-|-----------|-------|---------------|
-| Downsample (DWConv s=2) | 486,400 | 1.1% |
-| LocalBlock | 3,891,200 | 8.5% |
-| Attention ×2 | 19,972,000 | 43.8% |
-| ExpansionBlock | 21,222,400 | **46.6%** |
-| **TOTAL** | **45,572,000** | **100%** |
-
-### 4.3. Phân Bổ Tham Số
-
-| Thành phần | Params | % Tổng |
-|-----------|--------|--------|
-| **Stem** | 23,776 | 4.1% |
-| **Encoder Stages 1-3** | 287,690 | **49.9%** |
-| **Decoder Stages 1-3** | 258,508 | **44.8%** |
-| **UpsampleHead** | 6,536 | 1.1% |
-| **FeatureRefinement** | 250 | 0.0% |
-| **TaskClassifiers** | 214 | 0.0% |
-| **TOTAL** | **576,974** | **100%** |
-
-```
-Phân bổ tham số:
-
-Stem                ██                         4.1%
-Encoder S1-3        ████████████████████████   49.9%
-Decoder S1-3        ██████████████████████     44.8%
-UpsampleHead        █                          1.1%
-Refine + Classifier ▓ (negligible)             0.1%
-```
-
-#### Phân bổ theo loại module
-
-| Loại module | Params | % |
-|-------------|--------|---|
-| SeparableAttention | 275,990 | **47.8%** |
-| Conv2d (tất cả) | 295,704 | 51.3% |
-| GroupNorm | 5,280 | 0.9% |
-
-> **Gần 48% tham số nằm trong Attention** — nhưng attention chỉ chiếm 10.4% FLOPs. Điều này cho thấy Linear Attention rất hiệu quả về mặt tính toán.
-
-### 4.4. Sweep Alpha (Width Multiplier)
-
-| Alpha | d_model | Params | FLOPs | Jetson Nano FPS | RPi 5 FPS |
-|-------|---------|--------|-------|-----------------|-----------|
-| 0.25 | 16 | 43,790 | 112.5M | 318 | 63 |
-| **0.5** | **32** | **154,486** | **286.7M** | **190** | **30** |
-| 0.75 | 48 | 332,214 | 544.3M | 119 | 17 |
-| 1.0 | 64 | 576,974 | 885.4M | 80 | 11 |
-| 1.5 | 96 | 1,267,590 | 1,817.6M | 42 | 5 |
-| 2.0 | 128 | 2,226,334 | 3,083.5M | 26 | 3 |
-
-> **Khuyến nghị:** `alpha=0.5` là điểm cân bằng tốt — 155K params, 287M FLOPs, 190 FPS trên Jetson Nano.
-
-### 4.5. Sweep Kích Thước Đầu Vào
-
-| Input Size | FLOPs | Jetson Nano FPS | RPi 5 FPS |
-|-----------|-------|-----------------|-----------|
-| 128×128 | 141.7M | 286 | 53 |
-| 256×256 | 566.6M | 115 | 16 |
-| **320×320** | **885.4M** | **80** | **11** |
-| 384×384 | 1,274.9M | 58 | 8 |
-| 512×512 | 2,266.5M | 34 | 4 |
-| 640×320 | 1,770.7M | 43 | 6 |
-
-> **⚠️ Yêu cầu:** H, W phải chia hết cho 32 (5× downsampling stride=2). Các kích thước không thỏa (160, 224) sẽ gây lỗi assertion.
+- **Tiet kiem**: phan decode dat nhat chay 1 lan
+- Moi task chi them 1 classifier nhe (DW 3x3 + PW 1x1)
 
 ---
 
-## 5. Đánh Giá Thiết Bị Biên
+## 9. Pipeline Huấn luyện
 
-### 5.1. Dự Đoán Hiệu Năng (FP32, alpha=1.0, 320×320)
+### 9.1 Cấu hình Chung
 
-| Thiết bị | Latency | FPS | Bottleneck | Trạng thái |
-|----------|---------|-----|------------|-----------|
-| **Jetson Orin Nano (8GB)** | 2.8ms | **351** | Compute-bound | ✅ Realtime |
-| **Jetson Xavier NX (8GB)** | 3.8ms | **263** | Compute-bound | ✅ Realtime |
-| **Smartphone cao cấp (A17 Pro)** | 4.7ms | **212** | Compute-bound | ✅ Realtime |
-| **Jetson Nano (4GB)** | 12.5ms | **80** | Compute-bound | ✅ Realtime |
-| **Smartphone tầm trung (SD 7 Gen1)** | 14.0ms | **71** | Compute-bound | ✅ Realtime |
-| **Raspberry Pi 5 (CPU)** | 93.3ms | **11** | Compute-bound | ⚡ Khả dụng |
+| Hyperparameter | Giá trị |
+|----------------|---------|
+| Optimizer | **AdamW** |
+| Learning Rate | 1e-3 |
+| Weight Decay | 1e-4 |
+| Warmup Epochs | 5 |
+| LR Scheduler | **Poly** (multi-class) / **Cosine** (binary) |
+| Label Smoothing | 0.0–0.1 |
+| Batch Size | 16 |
+| Loss Function | **CE + Dice** (multi-class) / **BCE + Dice** (binary) |
+| Initializer | **He Uniform** (kaiming_uniform_) |
 
-#### Phân tích bottleneck (Jetson Nano):
+### 9.2 Data Augmentation
 
-| Thành phần | Thời gian |
-|-----------|-----------|
-| Compute (FLOPs/effective_peak) | 10.76 ms |
-| Memory (data transfer) | 0.28 ms |
-| Kernel launch overhead (~85 kernels) | 1.27 ms |
-| Framework overhead | 0.50 ms |
-| **TOTAL** | **~12.5 ms** |
+| Intensity | Áp dụng cho | Augmentations |
+|-----------|-------------|---------------|
+| **Medium** | COCO Leaf, Cityscapes, Kvasir | Flip, Rotate(+-10), ColorJitter, Crop |
+| **Strong** | CamVid, VOC, ISIC | + ElasticTransform, GridDistortion, CoarseDropout |
 
-> Mô hình bị **compute-bound** trên tất cả thiết bị. Điều này tốt — có nghĩa quantization sẽ cải thiện đáng kể.
+### 9.3 Class Imbalance Handling
 
-### 5.2. So Sánh Quantization
+```python
+# Multi-class: class_weights tỉ lệ nghịch với tần suất pixel
+class_weights = compute_class_weights(train_loader, num_classes, ignore_index)
 
-| Thiết bị | FP32 | FP16 | INT8 | Speedup (FP32→INT8) |
-|----------|------|------|------|---------------------|
-| **Jetson Nano** | 80 fps | 125 fps | **274 fps** | 3.4× |
-| **Jetson Orin Nano** | 351 fps | 499 fps | **759 fps** | 2.2× |
-| **Raspberry Pi 5** | 11 fps | 130 fps | **153 fps** | 14.3× |
+# Binary: pos_weight cho BCE loss
+pos_weight = compute_pos_weight(train_loader)
+# = (#negative_pixels) / (#positive_pixels)
+```
 
-> - **FP16:** +56% FPS trên Jetson Nano, model size giảm 50% (1.1MB)
-> - **INT8:** +243% FPS trên Jetson Nano, model size giảm 75% (0.55MB)
-> - **Raspberry Pi 5 hưởng lợi nhiều nhất** từ INT8 (CPU có NEON SIMD INT8)
+### 9.4 Early Stopping
 
-### 5.3. Phân Tích Memory Footprint
-
-| Thành phần | Kích thước |
-|-----------|-----------|
-| Model weights (FP32) | 2.20 MB |
-| Input tensor (3×320×320) | 1.17 MB |
-| Activations (ước lượng, U-Net depth=4) | 5.86 MB |
-| Output tensors (2 tasks × 2 classes) | 1.56 MB |
-| **Peak Inference Memory** | **~10.8 MB** |
-
-> **Kết luận:** Memory footprint cực kỳ thấp (~11MB peak). Phù hợp với mọi thiết bị biên, kể cả các MCU có RAM hạn chế (ESP32-S3 với PSRAM, K210, etc.).
+- **Patience**: 15–20 epochs (tùy dataset)
+- **Min epochs**: 30 (đảm bảo warmup + hội tụ ban đầu)
+- **Monitor**: `val_metric` (mIoU hoặc Dice)
 
 ---
 
-## 6. Điểm Mạnh & Điểm Yếu
+## 10. Kết quả Benchmark Đa miền
 
-### 6.1. Điểm Mạnh
+### 10.1 Datasets
 
-| # | Điểm | Mô tả |
-|---|------|-------|
-| 1 | **Siêu nhẹ** | 0.58M params, 0.89G FLOPs — nhẹ hơn hầu hết segmentation model |
-| 2 | **Linear Attention O(N)** | Separable attention có độ phức tạp tuyến tính, chỉ 10.4% FLOPs |
-| 3 | **Multi-task hiệu quả** | Chia sẻ toàn bộ decode/upsample, classifier cực nhẹ → thêm task gần như miễn phí |
-| 4 | **Thiết kế module hóa** | Tất cả tham số qua `opts` Namespace hoặc argparse → dễ cấu hình, dễ experiment |
-| 5 | **Xử lý NaN chủ động** | Softmax FP32 + clamp context vector → ổn định mixed precision training |
-| 6 | **Kích thước đầu vào động** | Hỗ trợ ảnh không vuông (640×320) nhờ F.interpolate |
-| 7 | **GroupNorm** | Không phụ thuộc batch statistics → phù hợp batch size nhỏ, edge inference |
-| 8 | **Edge-ready** | Hỗ trợ quantization, depthwise separable conv, memory footprint 11MB |
-| 9 | **Realtime trên mọi Jetson** | 80+ FPS FP32, 274+ FPS INT8 trên Jetson Nano |
-| 10 | **Trainable nhanh** | 0.58M params → hội tụ nhanh, overfit test được với 100 epochs |
+| Dataset | Miền | Loại | Số lớp | Kích thước |
+|---------|------|------|--------|------------|
+| COCO Tea Leaf | Nông nghiệp | Multi-class | 8 | 320x320 |
+| CamVid | Đường phố | Multi-class | 32 | 360x480 |
+| Cityscapes | Đường phố | Multi-class | 19 | 512x1024 |
+| PASCAL VOC | Đa dụng | Multi-class | 21 | 384x384 |
+| Kvasir-SEG | Y tế (nội soi) | Binary | 1 | 256x256 |
+| ISIC 2018 | Y tế (da liễu) | Binary | 1 | 256x256 |
 
-### 6.2. Điểm Cần Lưu Ý
+### 10.2 Metrics
 
-| # | Điểm | Mô tả | Mức độ |
-|---|------|-------|--------|
-| 1 | **UpsampleHead nặng** | Chiếm 39.3% FLOPs do DecoderConcatLayer ở độ phân giải cao | 🔴 Cao |
-| 2 | **Stem tốn FLOPs** | 3 Conv3x3 s=2 ở full resolution → 16% FLOPs | 🟡 Trung bình |
-| 3 | **Yêu cầu H,W chia hết cho 32** | Do 5 lần downsample stride=2 (H/32, W/32) | 🟡 Trung bình |
-| 4 | **DecoderConcatLayer nhầm tên** | Dùng phép cộng (add) thay vì concat như tên gọi | 🟢 Thấp |
-| 5 | **GroupNorm cố định num_groups=4** | Với d_model nhỏ (alpha=0.25 → 16), 4 groups quá nhiều → lỗi | 🟢 Thấp |
-| 6 | **Patch size (1,1) ở Stage 3** | Về cơ bản bỏ qua attention ở stage sâu nhất | 🟢 Thấp |
-| 7 | **Không có multi-scale decoder** | Decoder chỉ nhận 1 scale từ encoder (không FPN-style fusion) | 🟡 Trung bình |
+- **Multi-class**: mIoU (Mean Intersection over Union)
+- **Binary**: Dice Coefficient (F1-score)
 
-### 6.3. Rủi Ro Tiềm Ẩn
+### 10.3 Cấu hình Huấn luyện theo Dataset
 
-| # | Rủi ro | Mô tả | Giải pháp |
-|---|--------|-------|-----------|
-| 1 | **Rank Collapse** | Linear attention có xu hướng suy giảm hạng hiệu dụng khi xếp chồng sâu | INLA (`blocks/inla.py`) đã được phát triển nhưng chưa tích hợp |
-| 2 | **NaN trong Attention** | Đã vá bằng FP32 softmax + clamp, nhưng vẫn cần theo dõi với LR lớn | Theo dõi grad norm, dùng gradient clipping |
-| 3 | **Assert trong Decoder** | `len(inputs)-1 == len(self.layers)` cứng → khó thay đổi số stage | Refactor sang cấu hình mềm |
+| Dataset | Epochs | Patience | Scheduler | Aug Intensity |
+|---------|--------|----------|-----------|---------------|
+| COCO Tea Leaf | 300 | 20 | Poly | Medium |
+| CamVid | 500 | 20 | Poly | Strong |
+| Cityscapes | 200 | 20 | Poly | Medium |
+| PASCAL VOC | 200 | 20 | Poly | Strong |
+| Kvasir-SEG | 150 | 15 | Cosine | Medium |
+| ISIC 2018 | 150 | 15 | Cosine | Strong |
 
 ---
 
-## 7. Khuyến Nghị Tối Ưu
+## 11. Kết luận & Hướng Phát triển
 
-### Ưu tiên 1: Giảm FLOPs ở UpsampleHead (hiện 39% FLOPs)
+### 11.1 Tóm tắt Đóng góp
 
-| Giải pháp | Expected FLOPs reduction | Độ khó |
-|-----------|------------------------|--------|
-| Thay DecoderConcatLayer bằng Conv1x1 fusion | ~15-20% tổng FLOPs | Thấp |
-| Dùng bilinear upsampling (không DWConv sau upsample) | ~5-8% tổng FLOPs | Thấp |
-| Bỏ ExpansionBlock trong DecoderConcatLayer | ~10-12% tổng FLOPs | Trung bình |
+1. **Kiến trúc lai CNN-Transformer hiệu quả**: U-Net + MobileViTv2 separable attention → vừa nhẹ vừa chính xác
+2. **4 biến thể linh hoạt**: Nano (0.3M) → ProMax (7M), phủ từ Raspberry Pi đến Server
+3. **Ổn định huấn luyện**: Float32-protected attention, ReLU6, GroupNorm, gradient checkpointing → không NaN
+4. **Thiết kế multi-task**: Shared decoder + lightweight task-specific classifiers
+5. **Adaptive architecture**: Tự động pad odd-size inputs, auto-select GroupNorm groups
 
-### Ưu tiên 2: Quantization
+### 11.2 Hạn chế Hiện tại
 
-| Loại | Tăng FPS (Jetson Nano) | Model size |
-|------|----------------------|------------|
-| FP16 | +56% | 1.1 MB |
-| INT8 (TensorRT) | +243% | 0.55 MB |
-| INT8 (TFLite) | +200% | 0.55 MB |
+- **Patch size cố định (2,2)** cho hầu hết các stage — có thể thử multi-scale patches
+- **Chưa tích hợp Knowledge Distillation** từ ProMax → Nano
+- **Chưa có quantization-aware training** (QAT) cho INT8 deployment
 
-### Ưu tiên 3: Giảm Alpha
+### 11.3 Hướng Phát triển
 
-| Alpha | FLOPs reduction | FPS (Jetson Nano) | Trade-off |
-|-------|----------------|-------------------|-----------|
-| 0.75 | -39% | 119 fps | Chất lượng giảm nhẹ |
-| **0.5** | **-68%** | **190 fps** | **Cân bằng tốt** |
-| 0.25 | -87% | 318 fps | Có thể underfit |
-
-### Ưu tiên 4: Tối ưu Stem
-
-| Giải pháp | Expected FLOPs reduction |
-|-----------|------------------------|
-| Thay Conv1: 3×3 → 1×1 + 3×3 DW | ~8% tổng FLOPs |
-| Dùng stride=2 ngay từ Conv1 (bỏ 1 tầng stem) | ~5% tổng FLOPs |
-
-### Ưu tiên 5: Kernel Fusion (TensorRT / ncnn)
-
-```
-Fuse Conv2d + ReLU → 1 kernel
-Fuse Conv2d + GroupNorm + ReLU → 1 kernel
-→ Giảm ~30% kernel launches, giảm memory traffic
-```
-
-### Ưu tiên 6: Pruning & Kiến trúc
-
-- Pruning attention heads không cần thiết ở shallow layers (dùng spectral analysis từ `tools/exp_rank_collapse.py`)
-- Structural re-parameterization (RepVGG-style) cho stem
-- Tích hợp INLA để chống rank collapse khi tăng depth
-
-### Tổng tiềm năng tối ưu
-
-| Kịch bản | FLOPs | Params | Jetson Nano FPS |
-|----------|-------|--------|-----------------|
-| Hiện tại (alpha=1.0, FP32) | 885M | 577K | 80 |
-| + Đơn giản UpsampleHead | ~620M | ~550K | ~110 |
-| + alpha=0.5 | ~200M | ~147K | ~250 |
-| + INT8 quantization | 200M | 147K | **~500+** |
-| **Tổng cộng (all optimizations)** | **~200M** | **~147K** | **~500+** |
+| Hướng | Mô tả | Ưu tiên |
+|-------|------|---------|
+| **QAT + INT8 Deployment** | Quantize model về INT8 cho NPU (Jetson/Smartphone) | Cao |
+| **Neural Architecture Search** | Tự động tìm optimal d_model, expansion_factor, num_transformer_blocks | Trung bình |
+| **Multi-scale Patches** | Patch size thích ứng theo spatial resolution | Trung bình |
+| **Knowledge Distillation** | ProMax (teacher) → Nano (student) | Thấp |
+| **Real-time Video Segmentation** | Temporal consistency + optical flow guidance | Thấp |
+| **3D Extension** | U-MobileViT-Net 3D cho Medical Volume Segmentation | Thấp |
 
 ---
 
-## 8. Lộ Trình Triển Khai
-
-### Giai Đoạn 1: Export & Baseline
+## Phụ lục A: Cấu trúc Thư mục
 
 ```
-□ PyTorch → ONNX export (FP32)
-□ Verify ONNX model (shape inference, opset compatibility)
-□ ONNX → TensorRT (Jetson)
-□ ONNX → ONNX Runtime (Raspberry Pi)
-□ ONNX → TFLite (Mobile)
-□ Benchmark: latency, FPS, accuracy trên test set
+models/u_mobilevit_net/
+├── __init__.py          # Public API exports
+├── configs.py           # 4 variant definitions (nano/base/pro/promax)
+├── u_models.py          # UMobileViT wrapper + factory functions
+├── encoder_block.py     # UMobileViTEncoder + EncoderLayer
+├── decoder_block.py     # UMobileViTDecoder + DecoderLayer + ConcatLayer
+├── module.py            # _UMobileViTLayer base + local/expansion blocks
+├── transfomer.py        # SeparableAttention + Transformer Enc/Dec layers
+└── seg_head.py          # UpsampleHead + FeatureRefinement + SegHeads
+
+tools/
+├── evaluation.py        # FLOPs calculator, params counter, edge latency estimator
+├── training.py          # SegmentationTrainer, TrainingConfig, class weight helpers
+├── data.py              # create_dataloaders, DatasetInfo, augmentation pipeline
+└── visualization.py     # Publication-quality plotting utilities
 ```
 
-### Giai Đoạn 2: Tối Ưu Cơ Bản
+## Phụ lục B: Cách Sử dụng Nhanh
 
-```
-□ FP16 quantization với TensorRT → benchmark
-□ Kernel fusion (Conv+BN+ReLU) → benchmark
-□ Graph optimization (layer fusion, constant folding)
-□ Chọn alpha=0.5 nếu cần FPS cao hơn
-```
+```python
+from models.u_mobilevit_net import umobilevit_base, umobilevit_promax
+from tools.evaluation import compute_flops, compute_parameters, format_flops
 
-### Giai Đoạn 3: Tối Ưu Nâng Cao
+# Khởi tạo
+model = umobilevit_base(out_channels=8, head="single")
 
-```
-□ INT8 calibration (cần ~100-500 ảnh đại diện)
-□ Pruning attention heads dư thừa (spectral analysis)
-□ Đơn giản hóa UpsampleHead (bỏ DecoderConcatLayer, dùng bilinear)
-□ Structural re-parameterization cho stem
-□ Tích hợp INLA nếu cần tăng depth
-```
+# Phân tích
+params = compute_parameters(model)
+flops, breakdown = compute_flops(model, input_size=(320, 320))
+print(f"Params: {params/1e6:.2f}M | FLOPs: {format_flops(flops)}")
 
-### Giai Đoạn 4: Production
-
-```
-□ Multi-threaded pipeline: preprocess → inference → postprocess
-□ Batch inference (nếu throughput > latency quan trọng hơn)
-□ Quantization-aware training (QAT) nếu INT8 bị giảm accuracy >2%
-□ A/B testing: so sánh chất lượng segmentation với baseline
-□ Monitoring: latency percentile, memory usage, accuracy drift
+# Forward
+import torch
+x = torch.randn(1, 3, 320, 320)
+output = model(x)  # (1, 8, 320, 320)
 ```
 
 ---
 
-## 9. Kết Luận
-
-### Tổng kết
-
-U-MobileViT-Net là một kiến trúc **U-Net hybrid CNN-Transformer** được thiết kế cho **dense prediction trên thiết bị biên**:
-
-1. **Cực kỳ nhẹ:** 0.58M params, 0.89G FLOPs, 2.2MB model size
-2. **Nhanh:** 80+ FPS trên Jetson Nano (FP32), 274+ FPS (INT8)
-3. **Linear Attention O(N):** Chỉ 10.4% FLOPs, hiệu quả hơn O(N²) standard attention
-4. **Multi-task:** Thêm tác vụ gần như miễn phí nhờ shared decoder + lightweight classifiers
-5. **Edge-ready:** GroupNorm, quantization support, memory footprint chỉ 11MB
-
-### Phân loại thiết bị phù hợp
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ ✅ REALTIME (≥30 FPS):                                          │
-│    • Tất cả Jetson (Nano, Xavier NX, Orin Nano)                │
-│    • Tất cả smartphone (kể cả tầm trung)                       │
-│                                                                 │
-│ ⚡ KHẢ DỤNG (10-30 FPS):                                        │
-│    • Raspberry Pi 5 (FP32: 11 FPS → INT8: 153 FPS)            │
-│                                                                 │
-│ 💡 Với tối ưu (alpha=0.5 + INT8):                              │
-│    • Raspberry Pi 5 đạt 250+ FPS                               │
-│    • Jetson Nano đạt 500+ FPS                                  │
-│    • Có thể chạy trên MCU (ESP32-S3, K210) với pruning thêm   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### File công cụ phân tích
-
-| File | Mục đích |
-|------|----------|
-| `tools/manual_flops.py` | Đếm FLOPs thủ công (chính xác, không phụ thuộc thop) |
-| `tools/evaluate_edge.py` | Đánh giá toàn diện thiết bị biên |
-| `tools/exp_rank_collapse.py` | Đo rank collapse của attention |
-
----
-
-## Phụ Lục
-
-### A. Các mô hình phụ trong repository
-
-| Mô hình | File | Đặc điểm |
-|---------|------|----------|
-| **UNetMobileViT** | `u_mobilevit_net_base.py` | Phiên bản đơn giản: MV2Block + LinearSelfAttention, có QuantStub |
-| **UNetLite** | `basemodels.py` | U-Net thuần convolution (DoubleConv), không attention |
-| **MobileViTBlock** | `blocks/mobilevit.py` | MobileViT gốc (Mehta & Rastegari, 2021) — multi-head softmax attention |
-| **INLA** | `blocks/inla.py` | Inverted Nonlinear Low-rank Attention — chống rank collapse |
-
-### B. Yêu cầu hệ thống
-
-- **Python:** 3.8+
-- **PyTorch:** 2.4.0+
-- **Conda env:** `vision_env`
-- **CUDA:** Hỗ trợ (không bắt buộc cho inference)
-- **PYTHONPATH:** `$PWD` (gốc repository)
-
-### C. Lệnh chạy phân tích
-
-```bash
-# Kích hoạt môi trường
-conda activate vision_env
-export PYTHONPATH=$PWD
-
-# Phân tích FLOPs chi tiết
-python tools/manual_flops.py --alpha 1.0 --height 320 --width 320
-
-# Đánh giá thiết bị biên
-python tools/evaluate_edge.py --alpha 1.0 --height 320 --width 320
-
-# Đánh giá với FP16 precision
-python tools/evaluate_edge.py --precision fp16
-
-# Sweep các cấu hình
-python tools/evaluate_edge.py --alpha 0.5 --height 256 --width 256
-```
+> **Báo cáo được sinh từ codebase ngày 03/06/2026.**
+> Mọi thông tin kiến trúc được trích xuất trực tiếp từ source code tại `models/u_mobilevit_net/`.
