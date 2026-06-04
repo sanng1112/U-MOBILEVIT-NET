@@ -98,7 +98,13 @@ class INLAAttention(nn.Module):
         return _nonneg_feature_map(self.lift(x))
 
     def forward(self, x: Tensor) -> Tensor:
-        # x: (B, N, d)
+        # x: (B, N, d) hoặc (N, d) — thêm batch dim nếu thiếu
+        if x.dim() == 2:
+            x = x.unsqueeze(0)             # (N, d) → (1, N, d)
+            squeeze_out = True
+        else:
+            squeeze_out = False
+
         q = self._phi(self.q_proj(x))      # (B, N, F)  F = r nếu lifting, ngược lại d
         k = self._phi(self.k_proj(x))      # (B, N, F)
         v = self.v_proj(x)                 # (B, N, d)
@@ -113,7 +119,11 @@ class INLAAttention(nn.Module):
 
         # O = D⁻¹ (Q S) : (B, N, d)
         out = torch.einsum("bnf,bfd->bnd", q, context) / denom
-        return self.proj_drop(self.out_proj(out))
+        out = self.proj_drop(self.out_proj(out))
+
+        if squeeze_out:
+            out = out.squeeze(0)           # (1, N, d) → (N, d)
+        return out
 
     def extra_repr(self) -> str:
         return (f"dim={self.dim}, dim_compress={self.dim_compress}, "

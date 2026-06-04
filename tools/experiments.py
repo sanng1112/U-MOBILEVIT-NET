@@ -45,7 +45,7 @@ def _correlated_input(
     V = torch.randn(rank, dim, generator=g)
     X = U @ V
     X = X / X.std()
-    return X
+    return X.unsqueeze(0)  # Add batch dim for INLA layers: (N, d) -> (1, N, d)
 
 
 def run_rank_collapse_experiment(
