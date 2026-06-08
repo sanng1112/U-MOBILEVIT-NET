@@ -1,0 +1,26 @@
+model:
+  name: mlp_mnist
+  input_size: [1, 28, 28]
+  output_dim: 10
+  layers:
+    - type: Flatten
+    - type: FC
+      in_features: 784
+      out_features: 512
+    - type: Dropout
+      p: 0.6
+    - type: FC
+      in_features: 512
+      out_features: 10
+training:
+  epochs: 20
+  batch_size: 64
+  lr: 0.001
+  optimizer: adam
+  scheduler: cosine
+  warmup_epochs: 2
+dataset:
+  name: mnist
+  image_size: [28, 28]
+  num_classes: 10
+  task: classification

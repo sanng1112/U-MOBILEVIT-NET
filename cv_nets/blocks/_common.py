@@ -40,37 +40,7 @@ def autopad(kernel_size: int, dilation: int = 1) -> int:
     return (kernel_size - 1) // 2 * dilation
 
 
-# Bảng ánh xạ tên -> lớp kích hoạt (mở rộng dễ dàng).
-_ACTIVATIONS = {
-    "relu": lambda: nn.ReLU(inplace=True),
-    "relu6": lambda: nn.ReLU6(inplace=True),
-    "leaky_relu": lambda: nn.LeakyReLU(0.1, inplace=True),
-    "silu": lambda: nn.SiLU(inplace=True),
-    "swish": lambda: nn.SiLU(inplace=True),
-    "gelu": lambda: nn.GELU(),
-    "hardswish": lambda: nn.Hardswish(inplace=True),
-    "hardsigmoid": lambda: nn.Hardsigmoid(inplace=True),
-    "mish": lambda: nn.Mish(inplace=True),
-    "sigmoid": lambda: nn.Sigmoid(),
-    "tanh": lambda: nn.Tanh(),
-    "identity": lambda: nn.Identity(),
-    "none": lambda: nn.Identity(),
-}
-
-
-def get_activation(name: Optional[Union[str, nn.Module]]) -> nn.Module:
-    """
-    Trả về module kích hoạt từ tên chuỗi. Nếu truyền sẵn `nn.Module` thì giữ nguyên;
-    `None` -> `nn.Identity`.
-    """
-    if name is None:
-        return nn.Identity()
-    if isinstance(name, nn.Module):
-        return name
-    key = name.lower()
-    if key not in _ACTIVATIONS:
-        raise ValueError(f"Activation '{name}' chưa hỗ trợ. Các lựa chọn: {list(_ACTIVATIONS)}")
-    return _ACTIVATIONS[key]()
+from cv_nets.layers.activation import build_activation as get_activation
 
 
 class ConvNormAct(nn.Module):

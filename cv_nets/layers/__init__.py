@@ -12,7 +12,7 @@ from .flatten import Flatten
 from .base_layer import BaseLayer
 from .linear_attention import LinearSelfAttention
 from .pooling import build_pooling_layer
-from .activation import build_activation_layer, arguments_activation_fn
+from .activation import build_activation, build_activation_layer, arguments_activation_fn
 from .normalization import build_normalization_layer, arguments_norm_layers
 
 

@@ -1,0 +1,56 @@
+model:
+  name: resnet_emotion
+  input_size: [1, 48, 48]
+  output_dim: 7
+  layers:
+    - type: ConvBNAct
+      out_channels: 32
+      kernel_size: 3
+    - type: ResNetBasicBlock
+      in_channels: 32
+      out_channels: 64
+      stride: 2
+    - type: ResNetBasicBlock
+      in_channels: 64
+      out_channels: 128
+      stride: 2
+    - type: ResNetBasicBlock
+      in_channels: 128
+      out_channels: 128
+      stride: 1
+    - type: ResNetBasicBlock
+      in_channels: 128
+      out_channels: 256
+      stride: 2
+    - type: ResNetBasicBlock
+      in_channels: 256
+      out_channels: 256
+      stride: 1
+    - type: ResNetBasicBlock
+      in_channels: 256
+      out_channels: 256
+      stride: 2
+    - type: FC
+      in_features: 256
+      out_features: 128
+    - type: FC
+      in_features: 128
+      out_features: 7
+training:
+  epochs: 100
+  batch_size: 128
+  lr: 0.005
+  optimizer: adam
+  scheduler: cosine
+  label_smoothing: 0.1
+dataset:
+  name: fer2013
+  image_size: [48, 48]
+  num_classes: 7
+  task: classification
+  root: ./data/emotion
+research:
+  enabled: true
+  track_effective_rank: true
+  track_spectral_entropy: true
+  visualize_every: 10

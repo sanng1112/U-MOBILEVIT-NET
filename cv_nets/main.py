@@ -1,24 +1,6 @@
-from layers import activation
-from layers.activation import SUPPORTED_ACT_FNS
-from layers import arguments_nn_layers
-import yaml
-from types import SimpleNamespace
+from cv_nets.pipeline.cli import cli
 
-def dict_to_namespace(d):
-    if isinstance(d, dict):
-        return SimpleNamespace(**{
-            k: dict_to_namespace(v)
-            for k, v in d.items()
-        })
-    return d
+if __name__ == "__main__":
+    cli()
 
-CONFIG = 'config/demo.yaml'
-
-with open(CONFIG, "r") as f:
-    cfg = yaml.safe_load(f)
-
-opts = dict_to_namespace(cfg)
-print(opts)
-
-print(opts.model.name)
 

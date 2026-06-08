@@ -145,3 +145,64 @@ for file in os.listdir(act_dir):
             importlib.import_module("." + model_name, package=__name__)
         except Exception as e:
             logger.warning(f"Failed to auto-import module '{model_name}': {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# build_activation — single source of truth
+# ═══════════════════════════════════════════════════════════════════
+
+_ACT_MAP = {
+    "relu": nn.ReLU,
+    "relu6": nn.ReLU6,
+    "leaky_relu": nn.LeakyReLU,
+    "silu": nn.SiLU,
+    "swish": nn.SiLU,
+    "gelu": nn.GELU,
+    "hardswish": nn.Hardswish,
+    "hardsigmoid": nn.Hardsigmoid,
+    "mish": nn.Mish,
+    "sigmoid": nn.Sigmoid,
+    "tanh": nn.Tanh,
+    "identity": nn.Identity,
+    "none": nn.Identity,
+}
+
+
+def build_activation(
+    name: str = "relu",
+    inplace: bool = True,
+    negative_slope: float = 0.1,
+    **kwargs,
+) -> nn.Module:
+    """Single source of truth for activation layers.
+
+    Dùng cho cả framework blocks (qua registry) và pure blocks (qua dict mapping).
+    Args:
+        name: Tên activation function.
+        inplace: Cho phép inplace cho các hàm hỗ trợ.
+        negative_slope: Hệ số cho LeakyReLU.
+        **kwargs: Tham số bổ sung.
+    Returns:
+        nn.Module instance.
+    """
+    name = name.lower()
+    if name in SUPPORTED_ACT_FNS:
+        return build_activation_layer(
+            None, act_type=name,
+            inplace=inplace, negative_slope=negative_slope, **kwargs,
+        )
+    if name in _ACT_MAP:
+        cls = _ACT_MAP[name]
+        sig = inspect.signature(cls.__init__)
+        params = {}
+        if "inplace" in sig.parameters:
+            params["inplace"] = inplace
+        if "negative_slope" in sig.parameters:
+            params["negative_slope"] = negative_slope
+        params.update(kwargs)
+        filtered = {k: v for k, v in params.items() if k in sig.parameters}
+        return cls(**filtered)
+    raise ValueError(
+        f"Activation '{name}' không hỗ trợ. "
+        f"Đã đăng ký: {SUPPORTED_ACT_FNS}. Mapping sẵn: {list(_ACT_MAP)}"
+    )

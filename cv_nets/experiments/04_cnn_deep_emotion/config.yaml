@@ -1,0 +1,50 @@
+model:
+  name: deep_cnn_emotion
+  input_size: [1, 48, 48]
+  output_dim: 7
+  layers:
+    - type: Conv2d
+      out_channels: 16
+      kernel_size: 3
+      padding: 1
+    - type: Conv2d
+      out_channels: 64
+      kernel_size: 3
+      padding: 1
+    - type: Conv2d
+      out_channels: 256
+      kernel_size: 3
+      padding: 1
+    - type: Conv2d
+      out_channels: 256
+      kernel_size: 3
+      padding: 1
+    - type: Conv2d
+      out_channels: 256
+      kernel_size: 3
+      padding: 0
+    - type: Flatten
+    - type: Dropout
+      p: 0.5
+    - type: FC
+      in_features: 256
+      out_features: 256
+    - type: FC
+      in_features: 256
+      out_features: 256
+    - type: FC
+      in_features: 256
+      out_features: 7
+training:
+  epochs: 100
+  batch_size: 128
+  lr: 0.005
+  optimizer: adam
+  scheduler: cosine
+  label_smoothing: 0.1
+dataset:
+  name: fer2013
+  image_size: [48, 48]
+  num_classes: 7
+  task: classification
+  root: ./data/emotion
